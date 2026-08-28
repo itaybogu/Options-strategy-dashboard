@@ -1,0 +1,26 @@
+# Options Scanner Suite — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Backend server
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Market data ─ primary source: Interactive Brokers TWS / IB Gateway
+# Requires TWS or IB Gateway running locally with the API enabled:
+#   Global Config → API → Settings → "Enable ActiveX and Socket Clients"
+#   Socket port 7497 (paper) or 7496 (live) must match server.py IBKR_PORT
+ib_insync>=0.9.86
+
+# Market data ─ fallback source (also used when DATA_PROVIDER="yfinance")
+yfinance>=0.2.40
+
+# Numerical / scientific computing
+numpy>=1.26.0
+pandas>=2.2.0
+scipy>=1.12.0
+
+# HTTP requests (S&P 500 ticker lists, Nasdaq/Yahoo earnings calendar)
+requests>=2.31.0
+
+# HTML table parsing (Wikipedia S&P 500 fallback source)
+lxml>=5.1.0

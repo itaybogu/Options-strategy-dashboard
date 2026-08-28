@@ -1,0 +1,2959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Options Scanner Suite</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ── Reset & base ─────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:          #060a0f;
+  --surface:     #0b1018;
+  --surface2:    #0f1520;
+  --border:      #1a2535;
+  --border2:     #243040;
+  --muted:       #3a4d63;
+  --dim:         #5a7080;
+  --text:        #c8d8e8;
+  --text-bright: #e8f2fa;
+  --cyan:        #00c8e8;
+  --cyan-dim:    rgba(0,200,232,0.12);
+  --cyan-glow:   rgba(0,200,232,0.25);
+  --green:       #00e896;
+  --green-dim:   rgba(0,232,150,0.10);
+  --yellow:      #f0b840;
+  --yellow-dim:  rgba(240,184,64,0.10);
+  --red:         #f04860;
+  --red-dim:     rgba(240,72,96,0.10);
+  --purple:      #9060f0;
+  --purple-dim:  rgba(144,96,240,0.10);
+  --orange:      #f07840;
+  --mono:        'JetBrains Mono', monospace;
+  --sans:        'Space Grotesk', sans-serif;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background:  var(--bg);
+  color:       var(--text);
+  font-family: var(--mono);
+  font-size:   13px;
+  line-height: 1.5;
+  min-height:  100vh;
+}
+
+/* ── Scan-line overlay (signature element) ─────────────────────────── */
+body::before {
+  content: '';
+  position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.04) 2px,
+    rgba(0, 0, 0, 0.04) 4px
+  );
+}
+
+/* ── Layout ────────────────────────────────────────────────────────── */
+.layout { display: flex; flex-direction: column; min-height: 100vh; }
+
+/* ── Header ────────────────────────────────────────────────────────── */
+.header {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(6, 10, 15, 0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 0 28px;
+  display: flex; align-items: center; gap: 24px;
+  height: 56px;
+}
+
+.header-logo {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--sans); font-weight: 700;
+  font-size: 15px; letter-spacing: -0.3px;
+  color: var(--text-bright);
+}
+
+.header-logo .logo-mark {
+  width: 28px; height: 28px;
+  border: 1.5px solid var(--cyan);
+  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--cyan); font-size: 12px; font-weight: 700;
+}
+
+.header-logo .logo-sub {
+  color: var(--dim); font-weight: 400; font-size: 11px;
+  letter-spacing: 0.5px; text-transform: uppercase;
+  margin-left: 2px;
+}
+
+.header-divider { width: 1px; height: 28px; background: var(--border2); }
+
+.header-time {
+  font-size: 11px; color: var(--dim);
+  letter-spacing: 0.5px;
+}
+
+.header-spacer { flex: 1; }
+
+.run-pill {
+  font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+  text-transform: uppercase; padding: 5px 16px;
+  border: 1px solid var(--border2); color: var(--dim);
+  clip-path: polygon(6px 0%, 100% 0%, calc(100% - 6px) 100%, 0% 100%);
+  background: transparent; transition: all 0.3s;
+}
+.run-pill.running { border-color: var(--cyan);  color: var(--cyan);  background: var(--cyan-dim); }
+.run-pill.done    { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+.run-pill.error   { border-color: var(--red);   color: var(--red);   background: var(--red-dim); }
+
+/* ── Clickable rows ─────────────────────────────────────────────────── */
+tr.clickable-row { cursor: pointer; }
+tr.clickable-row:hover td { background: rgba(0,200,232,0.06) !important; }
+tr.clickable-row .td-ticker::after {
+  content: ' ⤢'; font-size: 9px; color: var(--muted); opacity: 0; transition: opacity 0.15s;
+}
+tr.clickable-row:hover .td-ticker::after { opacity: 1; }
+
+/* ── Payoff Modal ───────────────────────────────────────────────────── */
+#payoffModal {
+  display: none; position: fixed; inset: 0; z-index: 9000;
+  background: rgba(4,8,14,0.90); backdrop-filter: blur(8px);
+  align-items: center; justify-content: center;
+}
+#payoffModal.open { display: flex; }
+
+.payoff-dialog {
+  background: var(--surface); border: 1px solid var(--border2);
+  width: min(840px, 96vw); max-height: 92vh; overflow-y: auto;
+  position: relative;
+  box-shadow: 0 0 60px rgba(0,0,0,0.6);
+}
+
+.payoff-hdr {
+  display: flex; align-items: center; gap: 14px;
+  padding: 15px 22px; border-bottom: 1px solid var(--border);
+  background: var(--surface2); position: sticky; top: 0; z-index: 10;
+}
+.payoff-hdr-text { flex: 1; min-width: 0; }
+.payoff-hdr-title {
+  font-family: var(--sans); font-size: 15px; font-weight: 700;
+  color: var(--text-bright); letter-spacing: -0.3px;
+}
+.payoff-hdr-sub { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+.payoff-close-btn {
+  background: transparent; border: 1px solid var(--border2);
+  color: var(--dim); cursor: pointer; font-family: var(--mono);
+  font-size: 11px; padding: 5px 14px; flex-shrink: 0;
+  transition: all 0.15s; letter-spacing: 0.5px;
+}
+.payoff-close-btn:hover { border-color: var(--red); color: var(--red); }
+
+.payoff-body { padding: 20px 22px; }
+
+.payoff-meta-strip {
+  display: flex; gap: 0; flex-wrap: wrap;
+  border: 1px solid var(--border); background: var(--surface2);
+  margin-bottom: 18px;
+}
+.payoff-meta-cell {
+  padding: 10px 16px; border-right: 1px solid var(--border);
+  min-width: 80px;
+}
+.payoff-meta-cell:last-child { border-right: none; }
+.payoff-meta-lbl { font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; }
+.payoff-meta-val { font-size: 13px; font-weight: 600; color: var(--text-bright); font-family: var(--mono); }
+
+.payoff-canvas-wrap { position: relative; background: var(--surface2); border: 1px solid var(--border); }
+canvas#payoffCanvas { display: block; width: 100%; }
+
+.payoff-legend {
+  display: flex; gap: 20px; justify-content: center; flex-wrap: wrap;
+  margin-top: 12px; font-size: 11px; color: var(--dim);
+}
+.payoff-legend-item { display: flex; align-items: center; gap: 7px; }
+.payoff-legend-line { width: 22px; height: 2px; display: inline-block; flex-shrink: 0; }
+
+.payoff-note {
+  margin-top: 15px; padding: 11px 15px;
+  border-left: 2px solid var(--cyan); background: rgba(0,200,232,0.04);
+  font-size: 11px; color: var(--dim); line-height: 1.65;
+}
+
+/* ── Status bar ────────────────────────────────────────────────────── */
+.status-bar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 28px;
+  display: flex; align-items: center; gap: 20px;
+  font-size: 11px; color: var(--dim);
+}
+
+.status-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--muted);
+  transition: background 0.3s;
+}
+.status-dot.running { background: var(--cyan); animation: pulse 1.2s ease-in-out infinite; }
+.status-dot.done    { background: var(--green); }
+.status-dot.error   { background: var(--red); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--cyan-glow); }
+  50%       { opacity: 0.6; box-shadow: 0 0 0 6px transparent; }
+}
+
+.status-label { color: var(--text); font-weight: 500; }
+
+.status-divider { color: var(--border2); }
+
+/* ── Main content ──────────────────────────────────────────────────── */
+.main { padding: 24px 28px; display: flex; flex-direction: column; gap: 28px; }
+
+/* ── Strategy section ──────────────────────────────────────────────── */
+.strategy-section {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.strategy-header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+
+.strategy-num {
+  font-family: var(--sans); font-size: 10px; font-weight: 700;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--dim);
+}
+
+.strategy-title {
+  font-family: var(--sans); font-size: 14px; font-weight: 600;
+  color: var(--text-bright); letter-spacing: -0.2px;
+}
+
+.strategy-badge {
+  font-size: 10px; font-weight: 600; letter-spacing: 1px;
+  text-transform: uppercase; padding: 2px 8px;
+  border: 1px solid; border-radius: 2px;
+}
+
+.badge-idle    { color: var(--dim);    border-color: var(--border2); background: transparent; }
+.badge-running { color: var(--cyan);   border-color: var(--cyan);    background: var(--cyan-dim); }
+.badge-done    { color: var(--green);  border-color: var(--green);   background: var(--green-dim); }
+.badge-error   { color: var(--red);    border-color: var(--red);     background: var(--red-dim); }
+
+.strategy-spacer { flex: 1; }
+
+.strategy-count {
+  font-size: 11px; color: var(--dim);
+}
+
+/* ── Progress bar ──────────────────────────────────────────────────── */
+.progress-wrap {
+  height: 2px; background: var(--border);
+  position: relative; overflow: hidden;
+}
+.progress-fill {
+  height: 100%; background: var(--cyan);
+  transition: width 0.4s ease;
+  position: relative;
+}
+.progress-fill::after {
+  content: '';
+  position: absolute; right: 0; top: 0; bottom: 0;
+  width: 60px;
+  background: linear-gradient(90deg, transparent, rgba(0,200,232,0.8));
+}
+.progress-fill.done   { background: var(--green); }
+.progress-fill.done::after { display: none; }
+.progress-fill.error  { background: var(--red); }
+
+/* ── Tables ────────────────────────────────────────────────────────── */
+.table-wrap {
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+}
+.table-wrap::-webkit-scrollbar { width: 6px; height: 6px; }
+.table-wrap::-webkit-scrollbar-track { background: var(--surface); }
+.table-wrap::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+table {
+  width: 100%; border-collapse: collapse;
+  font-size: 12px;
+}
+
+thead {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--surface2);
+}
+
+th {
+  padding: 9px 14px;
+  text-align: left;
+  font-size: 10px; font-weight: 600;
+  letter-spacing: 1.2px; text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border2);
+  white-space: nowrap;
+  cursor: pointer; user-select: none;
+}
+th:hover { color: var(--cyan); }
+th.sort-asc::after  { content: ' ↑'; color: var(--cyan); }
+th.sort-desc::after { content: ' ↓'; color: var(--cyan); }
+
+td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+tr:last-child td { border-bottom: none; }
+
+tr:hover td { background: rgba(0,200,232,0.03); }
+
+.td-ticker {
+  font-weight: 700; font-size: 13px;
+  color: var(--cyan); letter-spacing: 0.5px;
+}
+
+.td-spot { color: var(--text-bright); }
+
+.td-dim  { color: var(--dim); font-size: 11px; }
+
+/* ── Verdict / Conclusion badges ───────────────────────────────────── */
+.verdict {
+  display: inline-block; padding: 2px 10px;
+  font-size: 10px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; white-space: nowrap;
+  clip-path: polygon(5px 0%, 100% 0%, calc(100% - 5px) 100%, 0% 100%);
+}
+.verdict-buy    { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,232,150,0.3); }
+.verdict-con    { background: var(--yellow-dim); color: var(--yellow); border: 1px solid rgba(240,184,64,0.3); }
+.verdict-avoid  { background: var(--red-dim);    color: var(--red);    border: 1px solid rgba(240,72,96,0.3); }
+.verdict-error  { background: transparent; color: var(--muted); border: 1px solid var(--border2); }
+.verdict-rec    { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,232,150,0.3); }
+
+/* ── Composite score bar ───────────────────────────────────────────── */
+.score-wrap {
+  display: flex; align-items: center; gap: 8px;
+}
+.score-bar-bg {
+  width: 80px; height: 4px; background: var(--border2);
+  flex-shrink: 0;
+}
+.score-bar-fill {
+  height: 100%; transition: width 0.5s ease;
+  background: linear-gradient(90deg, var(--red) 0%, var(--yellow) 50%, var(--green) 85%);
+}
+.score-val { color: var(--text-bright); font-size: 12px; font-weight: 600; min-width: 36px; }
+
+/* ── Factor cells ──────────────────────────────────────────────────── */
+.factor-pass { color: var(--green); }
+.factor-fail { color: var(--red); }
+.factor-val { font-weight: 500; }
+
+/* ── Inline pass/fail check ─────────────────────────────────────────── */
+.check-pass { color: var(--green); }
+.check-fail { color: var(--red); }
+
+/* ── Empty / loading states ────────────────────────────────────────── */
+.empty-state {
+  padding: 40px 20px; text-align: center;
+  color: var(--muted); font-size: 12px; letter-spacing: 0.5px;
+}
+.empty-state .empty-icon { font-size: 28px; margin-bottom: 10px; opacity: 0.4; }
+.empty-state .empty-text { text-transform: uppercase; letter-spacing: 1.5px; }
+
+/* ── Summary cards ──────────────────────────────────────────────────── */
+.summary-bar {
+  display: flex; gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+.summary-card {
+  padding: 12px 20px; flex: 1; min-width: 0;
+  border-right: 1px solid var(--border);
+}
+.summary-card:last-child { border-right: none; }
+.summary-val {
+  font-family: var(--sans); font-size: 22px; font-weight: 700;
+  line-height: 1; margin-bottom: 3px;
+}
+.summary-lbl {
+  font-size: 10px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 1.2px;
+}
+
+/* ── Filter row ─────────────────────────────────────────────────────── */
+.filter-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+.filter-btn {
+  background: transparent;
+  border: 1px solid var(--border2); color: var(--dim);
+  padding: 3px 12px; cursor: pointer;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  letter-spacing: 1px; text-transform: uppercase;
+  transition: all 0.15s;
+}
+.filter-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.filter-btn.active { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-dim); }
+.filter-search {
+  margin-left: auto;
+  background: var(--surface2); border: 1px solid var(--border2);
+  color: var(--text); padding: 4px 10px;
+  font-family: var(--mono); font-size: 12px;
+  outline: none; width: 160px;
+}
+.filter-search:focus { border-color: var(--cyan); }
+
+/* ── Collapsible section ────────────────────────────────────────────── */
+.collapse-toggle {
+  cursor: pointer; user-select: none;
+}
+.collapse-toggle::before {
+  content: '▼';
+  font-size: 9px; margin-right: 6px;
+  color: var(--dim);
+  display: inline-block;
+  transition: transform 0.2s;
+}
+.collapse-toggle.collapsed::before { transform: rotate(-90deg); }
+
+.collapsible-body { transition: none; }
+.collapsible-body.hidden { display: none; }
+
+/* ── Tooltip ─────────────────────────────────────────────────────────── */
+[data-tip] { position: relative; cursor: default; }
+[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute; bottom: calc(100% + 6px); left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface2); border: 1px solid var(--border2);
+  color: var(--text); font-size: 10px; padding: 4px 8px;
+  white-space: nowrap; z-index: 999; pointer-events: none;
+  letter-spacing: 0.3px;
+}
+
+/* ── Scrollbar global ───────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); }
+
+/* ── Earnings filter toggle ── */
+.earn-toggle {
+  display: flex; align-items: center; gap: 7px;
+  cursor: pointer; user-select: none;
+  font-size: 10px; letter-spacing: .5px; color: var(--dim); white-space: nowrap;
+}
+.earn-toggle input[type=checkbox] { display: none; }
+.toggle-track {
+  width: 30px; height: 16px; border-radius: 8px;
+  background: var(--border2); border: 1px solid var(--muted);
+  position: relative; transition: background .2s, border-color .2s; flex-shrink: 0;
+}
+.toggle-thumb {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--dim); position: absolute;
+  top: 2px; left: 2px; transition: left .2s, background .2s;
+}
+.earn-toggle input:checked + .toggle-track { background: var(--green-d); border-color: var(--green); }
+.earn-toggle input:checked + .toggle-track .toggle-thumb { left: 16px; background: var(--green); }
+.earn-warn { color: var(--yellow); font-weight: 700; }
+
+/* -- Put-selling read-only config echo -- */
+.ps-config {
+  font-size: 10px; color: var(--dim); letter-spacing: .5px;
+  display: flex; gap: 10px; flex-wrap: wrap;
+}
+.ps-config .k { color: var(--muted); }
+.ps-config .v { color: var(--cyan); font-weight: 600; }
+
+/* Phase label sits beside the count and only exists while a scan runs. */
+.ps-phase {
+  font-size: 10px; font-weight: 600; letter-spacing: .8px;
+  text-transform: uppercase; color: var(--yellow);
+  display: none;
+}
+.ps-phase.on { display: inline; }
+
+
+/* ── Info button ── */
+.info-btn {
+  width:20px; height:20px; border-radius:50%;
+  border:1.5px solid var(--muted); background:transparent;
+  color:var(--dim); font-size:10px; font-weight:700;
+  cursor:pointer; display:flex; align-items:center; justify-content:center;
+  transition:all .15s; flex-shrink:0; font-family:var(--sans); line-height:1; padding:0;
+}
+.info-btn:hover { border-color:var(--cyan); color:var(--cyan); background:var(--cyan-d); }
+
+/* ── Info modal ── */
+.info-overlay {
+  display:none; position:fixed; inset:0; z-index:500;
+  background:rgba(4,8,14,.88); backdrop-filter:blur(6px);
+  align-items:center; justify-content:center; padding:24px;
+}
+.info-overlay.open { display:flex; }
+.info-modal {
+  background:var(--surface2); border:1px solid var(--border2);
+  max-width:760px; width:100%; max-height:88vh; overflow-y:auto; position:relative;
+}
+.info-modal::-webkit-scrollbar { width:5px; }
+.info-modal::-webkit-scrollbar-thumb { background:var(--border2); }
+.info-modal-header {
+  display:flex; align-items:flex-start; gap:14px;
+  padding:20px 24px 16px; border-bottom:1px solid var(--border);
+  position:sticky; top:0; background:var(--surface2); z-index:1;
+}
+.ititle { font-family:var(--sans); font-size:16px; font-weight:700; color:var(--bright); flex:1; letter-spacing:-.2px; }
+.isub   { font-size:11px; color:var(--dim); margin-top:3px; }
+.info-close {
+  background:transparent; border:1px solid var(--border2); color:var(--dim);
+  padding:4px 10px; cursor:pointer; font-family:var(--mono); font-size:10px;
+  letter-spacing:1px; text-transform:uppercase; flex-shrink:0; transition:all .12s;
+}
+.info-close:hover { border-color:var(--red); color:var(--red); }
+.info-body { padding:20px 24px 28px; }
+.info-section { margin-bottom:22px; }
+.info-section:last-child { margin-bottom:0; }
+.info-h { font-family:var(--sans); font-size:11px; font-weight:700; letter-spacing:1.8px;
+  text-transform:uppercase; color:var(--cyan); margin-bottom:10px; }
+.info-p { font-size:12px; color:var(--text); line-height:1.7; margin-bottom:8px; }
+.info-p:last-child { margin-bottom:0; }
+.info-tbl { width:100%; border-collapse:collapse; font-size:11.5px; margin-top:6px; }
+.info-tbl th { padding:6px 10px; text-align:left; font-size:9px; font-weight:700;
+  letter-spacing:1.2px; text-transform:uppercase; color:var(--dim); border-bottom:1px solid var(--border2); }
+.info-tbl td { padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top; line-height:1.5; }
+.info-tbl tr:last-child td { border-bottom:none; }
+.info-tbl .name { color:var(--bright); font-weight:600; }
+.info-tbl .desc { color:var(--dim); }
+.wpill   { display:inline-block; padding:2px 8px; font-size:10px; font-weight:700; border-radius:2px; background:var(--cyan-d);   color:var(--cyan);   border:1px solid rgba(0,200,232,.2); white-space:nowrap; }
+.wpill-g { background:var(--green-d);  color:var(--green);  border-color:rgba(0,232,150,.2); }
+.wpill-y { background:var(--yellow-d); color:var(--yellow); border-color:rgba(240,184,64,.2); }
+.wpill-p { background:var(--purple-d); color:var(--purple); border-color:rgba(144,96,240,.2); }
+.wpill-r { background:var(--red-d);    color:var(--red);    border-color:rgba(240,72,96,.2); }
+.vdict-tbl { width:100%; border-collapse:collapse; font-size:11.5px; margin-top:6px; }
+.vdict-tbl td { padding:6px 10px; border-bottom:1px solid var(--border); }
+.vdict-tbl tr:last-child td { border-bottom:none; }
+
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-logo">
+      <div class="logo-mark">⚡</div>
+      Options Scanner Suite
+      <span class="logo-sub">/ S&P 500</span>
+    </div>
+    <div class="header-divider"></div>
+    <div class="header-time" id="clock">--:--:--</div>
+    <div class="header-spacer"></div>
+    <span id="nextCycleLabel" style="font-size:10px;color:var(--dim);margin-right:10px;"></span>
+    <select id="intervalSelect" class="filter-btn" style="margin-right:6px;" title="Gap between scans">
+      <option value="60" selected>1m</option>
+      <option value="300">5m</option>
+      <option value="600">10m</option>
+      <option value="900">15m</option>
+      <option value="1800">30m</option>
+    </select>
+    <button id="btnContinuous" class="filter-btn" onclick="toggleContinuous()" style="margin-right:10px;">▶ Run 24/7</button>
+    <span class="run-pill" id="runPill">◈ IDLE</span>
+  </header>
+
+  <!-- STATUS BAR -->
+  <div class="status-bar">
+    <div class="status-dot" id="globalDot"></div>
+    <span class="status-label" id="globalStatus">Ready</span>
+    <span class="status-divider">|</span>
+    <span id="globalDetail">Connecting to server…</span>
+    <div style="flex:1"></div>
+    <span id="runTime" style="color:var(--dim);font-size:10px;"></span>
+  </div>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- STRATEGY 1: VOL & MOMENTUM                                      -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="strategy-section" id="sec-vol_momentum">
+      <div class="strategy-header">
+        <span class="strategy-num">01</span>
+        <span class="strategy-title collapse-toggle" onclick="toggleSection('vol_momentum')">
+          Vol &amp; Momentum Screener
+        </span>
+        <button class="info-btn" onclick="showInfo('vol_momentum')" title="Strategy info">i</button>
+        <span class="strategy-badge badge-idle" id="badge-vol_momentum">Idle</span>
+        <span class="strategy-spacer"></span>
+        <span class="strategy-count" id="count-vol_momentum"></span>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-fill" id="prog-vol_momentum" style="width:0%"></div>
+      </div>
+
+      <div class="collapsible-body" id="body-vol_momentum">
+        <!-- Summary cards -->
+        <div class="summary-bar" id="summary-vol_momentum" style="display:none">
+          <div class="summary-card">
+            <div class="summary-val" id="vm-total" style="color:var(--cyan)">0</div>
+            <div class="summary-lbl">Scored</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="vm-buy" style="color:var(--green)">0</div>
+            <div class="summary-lbl">Buy Spread</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="vm-consider" style="color:var(--yellow)">0</div>
+            <div class="summary-lbl">Consider</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="vm-avoid" style="color:var(--red)">0</div>
+            <div class="summary-lbl">Avoid</div>
+          </div>
+          <div class="summary-card" id="vm-filtered-card" style="cursor:pointer"
+               title="Click to see why tickers were excluded"
+               onclick="showExcluded()">
+            <div class="summary-val" id="vm-filtered" style="color:var(--muted)">0</div>
+            <div class="summary-lbl">Excluded &#9432;</div>
+          </div>
+        </div>
+
+        <!-- Filter row -->
+        <div class="filter-row" id="filter-vol_momentum" style="display:none">
+          <button class="filter-btn active" onclick="setVMFilter('all',this)">All</button>
+          <button class="filter-btn" onclick="setVMFilter('BUY SPREAD',this)">Buy Spread</button>
+          <button class="filter-btn" onclick="setVMFilter('CONSIDER',this)">Consider</button>
+          <button class="filter-btn" onclick="setVMFilter('AVOID',this)">Avoid</button>
+          <input class="filter-search" id="vm-search" placeholder="Search ticker…" oninput="renderVM()">
+        
+          <label class="earn-toggle" title="Hide signals where 30-day avg stock volume &lt; 1.5M shares/day">
+            <input type="checkbox" id="vm-vol-filter" checked onchange="renderVM()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Vol ≥1.5M
+          </label>
+          <label class="earn-toggle" title="Hide signals where either option leg has bid/ask spread &gt; 30% of mid">
+            <input type="checkbox" id="vm-spread-filter" checked onchange="renderVM()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Spread ≤30%
+          </label>
+                  <label class="earn-toggle" title="Hide signals where earnings fall before the position expires (earn_days ≤ DTE)">
+            <input type="checkbox" id="vm-earn-filter" checked onchange="renderVM()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Hide earnings risk
+          </label></div>
+
+        <div class="table-wrap">
+          <div class="empty-state" id="empty-vol_momentum">
+            <div class="empty-icon">◈</div>
+            <div class="empty-text">Awaiting scan</div>
+          </div>
+          <table id="table-vol_momentum" style="display:none">
+            <thead>
+              <tr>
+                <th onclick="sortVM('ticker')">Ticker</th>
+                <th onclick="sortVM('composite')">Score</th>
+                <th onclick="sortVM('conclusion')">Signal</th>
+                <th onclick="sortVM('direction')">Dir</th>
+                <th onclick="sortVM('spot')">Spot</th>
+                <th onclick="sortVM('expiry')">Expiry</th>
+                <th onclick="sortVM('dte')">DTE</th>
+                <th onclick="sortVM('long_strike')">Strikes L/S</th>
+                <th onclick="sortVM('atm_iv')">ATM IV</th>
+                <th onclick="sortVM('otm_iv')">OTM IV</th>
+                <th onclick="sortVM('rv20')">RV20</th>
+                <th onclick="sortVM('vrp')">VRP</th>
+                <th onclick="sortVM('raw_skew')">Skew</th>
+                <th onclick="sortVM('f1')" title="F1 — IV Skew Edge (40%): rewards negative skew where OTM IV > ATM IV">Skew Edge</th>
+                <th onclick="sortVM('f2')" title="F2 — Momentum Composite (30%): 6-factor equal-weight momentum score">Momentum</th>
+                <th onclick="sortVM('f3')" title="F3 — Vol Regime / VRP (20%): ATM IV vs 20-day realised vol">Vol Regime</th>
+                <th onclick="sortVM('f4')" title="F4 — Cross-Sectional Skew Z (10%): skew rank vs S&P 500 peers">Skew Z</th>
+                <th onclick="sortVM('sector')">Sector</th>
+                <th onclick="sortVM('earn_days')" title="Next earnings date. ⚠ = earnings before position closes">Next Earnings</th>
+                <th onclick="sortVM('as_of')" title="When this row was last confirmed relevant">Updated</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-vol_momentum"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- STRATEGY 2: CALENDAR SPREAD                                     -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="strategy-section" id="sec-calendar">
+      <div class="strategy-header">
+        <span class="strategy-num">02</span>
+        <span class="strategy-title collapse-toggle" onclick="toggleSection('calendar')">
+          Calendar Spread Screener
+        </span>
+        <button class="info-btn" onclick="showInfo('calendar')" title="Strategy info">i</button>
+        <span class="strategy-badge badge-idle" id="badge-calendar">Idle</span>
+        <span class="strategy-spacer"></span>
+        <span class="strategy-count" id="count-calendar"></span>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-fill" id="prog-calendar" style="width:0%"></div>
+      </div>
+
+      <div class="collapsible-body" id="body-calendar">
+        <div class="summary-bar" id="summary-calendar" style="display:none">
+          <div class="summary-card">
+            <div class="summary-val" id="cal-pairs" style="color:var(--cyan)">0</div>
+            <div class="summary-lbl">Total Pairs</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="cal-tickers" style="color:var(--purple)">0</div>
+            <div class="summary-lbl">Tickers</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="cal-best-ff" style="color:var(--green)">—</div>
+            <div class="summary-lbl">Best FF%</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="cal-avg-ff" style="color:var(--yellow)">—</div>
+            <div class="summary-lbl">Avg FF%</div>
+          </div>
+        </div>
+
+        <div class="filter-row" id="filter-calendar" style="display:none">
+          <button class="filter-btn active" onclick="setCalFilter('all',this)">All Buckets</button>
+          <button class="filter-btn" onclick="setCalFilter('20-30d gap',this)">20-30d</button>
+          <button class="filter-btn" onclick="setCalFilter('10-20d gap',this)">10-20d</button>
+          <button class="filter-btn" onclick="setCalFilter('7-10d gap',this)">7-10d</button>
+          <input class="filter-search" id="cal-search" placeholder="Search ticker…" oninput="renderCal()">
+          <label class="earn-toggle" title="Hide pairs where 30-day avg stock volume < 1.5M shares/day">
+            <input type="checkbox" id="cal-vol-filter" checked onchange="renderCal()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Vol ≥1.5M
+          </label>
+          <label class="earn-toggle" title="Hide pairs where either leg has bid/ask spread &gt; 30% of mid">
+            <input type="checkbox" id="cal-spread-filter" checked onchange="renderCal()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Spread ≤30%
+          </label>
+          <label class="earn-toggle" title="Hide pairs where earnings fall before the long leg expires">
+            <input type="checkbox" id="cal-earn-filter" checked onchange="renderCal()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Hide earnings risk
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <div class="empty-state" id="empty-calendar">
+            <div class="empty-icon">◈</div>
+            <div class="empty-text">Awaiting scan</div>
+          </div>
+          <table id="table-calendar" style="display:none">
+            <thead>
+              <tr>
+                <th onclick="sortCal('ticker')">Ticker</th>
+                <th onclick="sortCal('ff')">FF%</th>
+                <th onclick="sortCal('spot')">Spot</th>
+                <th onclick="sortCal('exp_short')">Short Exp</th>
+                <th onclick="sortCal('dte_short')">DTE S</th>
+                <th onclick="sortCal('strike_short')">Strike S</th>
+                <th onclick="sortCal('iv_short')">IV S%</th>
+                <th onclick="sortCal('exp_long')">Long Exp</th>
+                <th onclick="sortCal('dte_long')">DTE L</th>
+                <th onclick="sortCal('strike_long')">Strike L</th>
+                <th onclick="sortCal('iv_long')">IV L%</th>
+                <th onclick="sortCal('forward_iv')">Fwd IV%</th>
+                <th onclick="sortCal('gap_days')">Gap</th>
+                <th onclick="sortCal('bucket')">Bucket</th>
+                <th onclick="sortCal('earn_days')" title="Next earnings date. ⚠ = earnings before long leg expires">Next Earnings</th>
+                <th onclick="sortCal('as_of')" title="When this row was last confirmed relevant">Updated</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-calendar"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- STRATEGY 3: EARNINGS OPTIONS SCANNER                           -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="strategy-section" id="sec-earnings">
+      <div class="strategy-header">
+        <span class="strategy-num">03</span>
+        <span class="strategy-title collapse-toggle" onclick="toggleSection('earnings')">
+          Earnings Options Scanner
+        </span>
+        <button class="info-btn" onclick="showInfo('earnings')" title="Strategy info">i</button>
+        <span class="strategy-badge badge-idle" id="badge-earnings">Idle</span>
+        <span class="strategy-spacer"></span>
+        <span class="strategy-count" id="count-earnings"></span>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-fill" id="prog-earnings" style="width:0%"></div>
+      </div>
+
+      <div class="collapsible-body" id="body-earnings">
+        <div class="summary-bar" id="summary-earnings" style="display:none">
+          <div class="summary-card">
+            <div class="summary-val" id="earn-total" style="color:var(--cyan)">0</div>
+            <div class="summary-lbl">Scanned</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="earn-rec" style="color:var(--green)">0</div>
+            <div class="summary-lbl">Recommended</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="earn-consider" style="color:var(--yellow)">0</div>
+            <div class="summary-lbl">Consider</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="earn-avoid" style="color:var(--red)">0</div>
+            <div class="summary-lbl">Avoid</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="earn-errors" style="color:var(--muted)">0</div>
+            <div class="summary-lbl">Errors</div>
+          </div>
+        </div>
+
+        <div class="filter-row" id="filter-earnings" style="display:none">
+          <button class="filter-btn active" onclick="setEarnFilter('all',this)">All</button>
+          <button class="filter-btn" onclick="setEarnFilter('Recommended',this)">Recommended</button>
+          <button class="filter-btn" onclick="setEarnFilter('Consider',this)">Consider</button>
+          <button class="filter-btn" onclick="setEarnFilter('Avoid',this)">Avoid</button>
+          <input class="filter-search" id="earn-search" placeholder="Search ticker…" oninput="renderEarn()">
+          <label class="earn-toggle" title="Hide rows where 30-day avg stock volume < 1.5M shares/day">
+            <input type="checkbox" id="earn-vol-filter" checked onchange="renderEarn()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Vol ≥1.5M
+          </label>
+          <label class="earn-toggle" title="Hide rows where either straddle leg has bid/ask spread &gt; 30% of mid">
+            <input type="checkbox" id="earn-spread-filter" checked onchange="renderEarn()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Spread ≤30%
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <div class="empty-state" id="empty-earnings">
+            <div class="empty-icon">◈</div>
+            <div class="empty-text">Awaiting scan</div>
+          </div>
+          <table id="table-earnings" style="display:none">
+            <thead>
+              <tr>
+                <th onclick="sortEarn('ticker')">Ticker</th>
+                <th onclick="sortEarn('company')">Company</th>
+                <th onclick="sortEarn('earnings_date')">Earnings</th>
+                <th onclick="sortEarn('earnings_time')">When</th>
+                <th onclick="sortEarn('verdict')">Verdict</th>
+                <th onclick="sortEarn('avg_vol_m')" data-tip="Avg 30d volume ≥ 1.5M">Avg Vol (M)</th>
+                <th onclick="sortEarn('iv30_rv30_val')" data-tip="IV30/RV30 ≥ 1.25">IV30/RV30</th>
+                <th onclick="sortEarn('ts_slope_val')" data-tip="Term structure slope ≤ -0.00406">TS Slope</th>
+                <th>Exp Move</th>
+                <th onclick="sortEarn('as_of')" title="When this row was last confirmed relevant">Updated</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-earnings"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="strategy-section" id="sec-put_selling">
+      <div class="strategy-header">
+        <span class="strategy-num">04</span>
+        <span class="strategy-title collapse-toggle" onclick="toggleSection('put_selling')">
+          Cash-Secured Put Writing
+        </span>
+        <button class="info-btn" onclick="showInfo('put_selling')" title="Strategy info">i</button>
+        <span class="strategy-badge badge-idle" id="badge-put_selling">Idle</span>
+        <span class="strategy-spacer"></span>
+        <!-- Read-only echo of the env-driven config so the operator can see which
+             knobs produced the book without being able to desync UI from server. -->
+        <span class="ps-config" id="ps-config"></span>
+        <!-- Names which phase the progress bar is currently counting. Without
+             this the bar appears to restart from 0% for no reason when the
+             fundamentals sweep ends and option pricing begins. -->
+        <span class="ps-phase" id="ps-phase"></span>
+        <span class="strategy-count" id="count-put_selling"></span>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-fill" id="prog-put_selling" style="width:0%"></div>
+      </div>
+
+      <div class="collapsible-body" id="body-put_selling">
+        <!-- Portfolio-level summary. Populated from the portfolio_summary block
+             that the server emits once every name is priced and weighted. -->
+        <div class="summary-bar" id="summary-put_selling" style="display:none">
+          <div class="summary-card">
+            <div class="summary-val" id="ps-count" style="color:var(--cyan)">0</div>
+            <div class="summary-lbl">Candidates</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="ps-funded" style="color:var(--green)">0</div>
+            <div class="summary-lbl">Funded</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="ps-collateral" style="color:var(--text-bright)">—</div>
+            <div class="summary-lbl">Collateral /100k</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="ps-premium" style="color:var(--green)">—</div>
+            <div class="summary-lbl">Premium /100k</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="ps-bookyield" style="color:var(--green)">—</div>
+            <div class="summary-lbl" data-tip="Premium ÷ collateral for this cycle. Not an expected return.">Book Yield</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="ps-avgiv" style="color:var(--yellow)">—</div>
+            <div class="summary-lbl">Avg IV</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="ps-avgdelta" style="color:var(--text)">—</div>
+            <div class="summary-lbl">Avg |Δ|</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="ps-avgfcfy" style="color:var(--cyan)">—</div>
+            <div class="summary-lbl">Avg FCF Yield</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-val" id="ps-avgassign" style="color:var(--yellow)">—</div>
+            <div class="summary-lbl">Avg Assign Prob</div>
+          </div>
+        </div>
+
+        <div class="filter-row" id="filter-put_selling" style="display:none">
+          <button class="filter-btn active" onclick="setPSFilter('all',this)">All</button>
+          <button class="filter-btn" onclick="setPSFilter('funded',this)"
+                  title="Names that receive at least one contract at a $100k book">Funded</button>
+          <button class="filter-btn" onclick="setPSFilter('target_met',this)"
+                  title="Names where the selected strike met the mode's premium target">Target Met</button>
+          <input class="filter-search" id="ps-search" placeholder="Search ticker…" oninput="renderPS()">
+          <label class="earn-toggle" title="Hide rows where either leg's bid/ask spread > 30% of mid">
+            <input type="checkbox" id="ps-spread-filter" checked onchange="renderPS()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Spread ≤30%
+          </label>
+          <label class="earn-toggle" title="Hide rows with no open interest — untradeable in practice">
+            <input type="checkbox" id="ps-oi-filter" checked onchange="renderPS()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            OI &gt;0
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <div class="empty-state" id="empty-put_selling">
+            <div class="empty-icon">◈</div>
+            <div class="empty-text">Awaiting scan</div>
+          </div>
+          <table id="table-put_selling" style="display:none">
+            <thead>
+              <tr>
+                <th onclick="sortPS('ticker')">Ticker</th>
+                <th onclick="sortPS('weight_pct')" data-tip="Portfolio weight from the risk-based weighting scheme">Weight</th>
+                <th onclick="sortPS('contracts_per_100k')" data-tip="Contracts to sell at a $100k book">Contracts</th>
+                <th onclick="sortPS('spot')">Spot</th>
+                <th onclick="sortPS('strike')">Strike</th>
+                <th onclick="sortPS('otm_pct')" data-tip="Distance of strike below spot">OTM %</th>
+                <th onclick="sortPS('dte')">DTE</th>
+                <th onclick="sortPS('premium')" data-tip="Mid premium per share">Prem</th>
+                <th onclick="sortPS('prem_pct')" data-tip="Premium as % of strike collateral">Prem %</th>
+                <th onclick="sortPS('iv')">IV</th>
+                <th onclick="sortPS('abs_delta')">|Δ|</th>
+                <th onclick="sortPS('assign_prob')" data-tip="Risk-neutral P(finish below strike)">Assign P</th>
+                <th onclick="sortPS('fcf_yield')" data-tip="Trailing free-cash-flow yield — the quality screen">FCF Y</th>
+                <th onclick="sortPS('premium_cash_at_weight')" data-tip="Dollar premium collected at this weight">Prem $</th>
+                <th>Quote</th>
+                <th onclick="sortPS('as_of')" title="When this row was last confirmed relevant">Updated</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-put_selling"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     PAYOFF DIAGRAM MODAL
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="payoffModal" onclick="if(event.target===this)closePayoff()">
+  <div class="payoff-dialog">
+    <div class="payoff-hdr">
+      <div class="payoff-hdr-text">
+        <div class="payoff-hdr-title" id="payoffTitle">—</div>
+        <div class="payoff-hdr-sub"   id="payoffSub">—</div>
+      </div>
+      <button class="payoff-close-btn" onclick="closePayoff()">✕ CLOSE</button>
+    </div>
+    <div class="payoff-body">
+      <div class="payoff-meta-strip" id="payoffMeta"></div>
+      <div class="payoff-canvas-wrap">
+        <canvas id="payoffCanvas" height="340"></canvas>
+      </div>
+      <div class="payoff-legend" id="payoffLegend"></div>
+      <div class="payoff-note"   id="payoffNote"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ── State ───────────────────────────────────────────────────────────── */
+let VM_FILTERED_COUNT = 0;  // tickers that did not pass scoring gates
+// [{ticker, reason}] — backs the clickable "Excluded" tile. The count alone
+// told the user nothing about *why* a ticker was dropped.
+let VM_EXCLUDED = [];
+
+const STATE = {
+  vol_momentum: { results: [], filter: 'all', sortKey: 'composite', sortDir: -1 },
+  calendar:     { results: [], filter: 'all', sortKey: 'ff',        sortDir: -1 },
+  earnings:     { results: [], filter: 'all', sortKey: 'earnings_date', sortDir: 1  },
+  put_selling:  { results: [], filter: 'all', sortKey: 'weight_pct',    sortDir: -1 },
+};
+
+/* Put-selling arrives as a batch (portfolio weights are relative to the whole
+   set, so no row is final until every name is priced). The server therefore
+   emits only ticker_done during the scan and the rows land via the
+   strategy_done -> /results refetch. PS_SUMMARY holds the portfolio_summary
+   block so a re-render (sort/filter) never has to recompute it. */
+let PS_SUMMARY = null;
+let PS_PHASE_LABEL = '';
+
+let runStartTime = null;
+
+/* ── Continuous mode ────────────────────────────────────────────────────
+   CONTINUOUS_ACTIVE mirrors the server's `continuous` flag: a loop thread
+   is running cycle after cycle until /stop.
+   CYCLE_IS_FRESH mirrors the `reset` flag on the run_started event. It is
+   true only for a cold-start / manual run, when the tables are empty and
+   there's nothing to protect. It is false for every later continuous-mode
+   cycle, and while false the ticker_result handlers below deliberately do
+   NOT touch STATE or the DOM: the previous cycle's rows (and their as_of
+   timestamps) stay on screen untouched until that strategy's pass finishes
+   and strategy_done swaps the whole table in at once. This is what keeps
+   the dashboard from ever showing a half-finished scan. */
+let CONTINUOUS_ACTIVE = false;
+let CYCLE_IS_FRESH     = true;
+let NEXT_CYCLE_TIMER   = null;
+
+/* ── Clock ──────────────────────────────────────────────────────────── */
+function tickClock() {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleTimeString('en-US', {hour12: false});
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+/* ── Row freshness timestamps ──────────────────────────────────────────
+   Every result row is stamped server-side with `as_of` (when this row was
+   last confirmed) and `cycle` (which pass produced it). relTime/tsCell
+   render that as a small relative-time cell; refreshTimestamps() ticks the
+   text every 30s so "3s ago" doesn't silently drift to "9m ago" without a
+   full re-render. */
+function relTime(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return '—';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 5)     return 'just now';
+  if (s < 60)    return s + 's ago';
+  if (s < 3600)  return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+function tsCell(iso) {
+  return `<td class="td-dim" title="${iso ? 'as of ' + iso : ''}">${relTime(iso)}</td>`;
+}
+setInterval(() => {
+  if (STATE.vol_momentum.results.length) renderVM();
+  if (STATE.calendar.results.length)     renderCal();
+  if (STATE.earnings.results.length)     renderEarn();
+  if (STATE.put_selling.results.length)  renderPS();
+}, 30000);
+
+/* ── Run timer ──────────────────────────────────────────────────────── */
+let timerInterval = null;
+function startTimer() {
+  runStartTime = Date.now();
+  timerInterval = setInterval(() => {
+    const sec = Math.floor((Date.now() - runStartTime) / 1000);
+    const m   = String(Math.floor(sec / 60)).padStart(2,'0');
+    const s   = String(sec % 60).padStart(2,'0');
+    document.getElementById('runTime').textContent = `elapsed ${m}:${s}`;
+  }, 1000);
+}
+function stopTimer() { clearInterval(timerInterval); }
+
+/* ── API ────────────────────────────────────────────────────────────── */
+function setPill(cls, text) {
+  const el = document.getElementById('runPill');
+  el.className = 'run-pill ' + cls;
+  el.textContent = text;
+}
+
+async function startRun() {
+  STATE.vol_momentum.results = [];
+  VM_FILTERED_COUNT = 0;
+  VM_EXCLUDED = [];
+  STATE.calendar.results     = [];
+  STATE.earnings.results     = [];
+  /* Put-selling must be cleared too, and its cached book summary with it.
+     Otherwise a re-run shows the previous cycle's weighted rows and totals as
+     though they were live, then silently swaps them at strategy_done. */
+  STATE.put_selling.results  = [];
+  PS_SUMMARY = null;
+  psSetPhase('');
+
+  ['vol_momentum','calendar','earnings','put_selling'].forEach(k => {
+    setBadge(k, 'idle');
+    setProgress(k, 0, 1);
+    showEmpty(k);
+    const summary = document.getElementById(`summary-${k}`);
+    const filter  = document.getElementById(`filter-${k}`);
+    if (summary) summary.style.display = 'none';
+    if (filter)  filter.style.display  = 'none';
+    const count = document.getElementById(`count-${k}`);
+    if (count) count.textContent = '';
+  });
+
+  setGlobalStatus('running', 'Running…', 'Strategies executing sequentially');
+  setPill('running', '⏳ RUNNING…');
+  startTimer();
+
+  try {
+    const res  = await fetch('/run', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) {
+      setGlobalStatus('error', 'Cannot start', data.reason || 'Server refused the run');
+      setPill('error', '✕ ERROR');
+      stopTimer();
+      return;
+    }
+    connectSSE();
+  } catch(e) {
+    setGlobalStatus('error', 'Server Error', `POST /run failed: ${e.message} — check server.py console for import errors`);
+    setPill('error', '✕ ERROR');
+    stopTimer();
+  }
+}
+
+/* ── Continuous (24/7) mode ────────────────────────────────────────────
+   Unlike startRun(), this never clears STATE. The previous cycle's rows
+   (and their timestamps) are left exactly as they are; only strategy_done
+   events (see handleEvent below) replace them, and only once that
+   strategy's pass has fully finished. */
+function toggleContinuous() {
+  if (CONTINUOUS_ACTIVE) stopContinuousMode(); else startContinuousMode();
+}
+
+async function startContinuousMode() {
+  const interval = parseInt(document.getElementById('intervalSelect').value, 10) || 300;
+  try {
+    const res  = await fetch(`/run/continuous?interval_sec=${interval}`, { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) {
+      setGlobalDetail(`Could not start continuous mode: ${data.reason || 'unknown error'}`);
+      return;
+    }
+    CONTINUOUS_ACTIVE = true;
+    updateContinuousButton();
+    connectSSE();
+  } catch(e) {
+    setGlobalDetail(`POST /run/continuous failed: ${e.message}`);
+  }
+}
+
+async function stopContinuousMode() {
+  try {
+    await fetch('/stop', { method: 'POST' });
+    setGlobalDetail('Stopping after the current cycle finishes…');
+    const btn = document.getElementById('btnContinuous');
+    if (btn) btn.disabled = true;
+  } catch(e) {
+    setGlobalDetail(`POST /stop failed: ${e.message}`);
+  }
+}
+
+function updateContinuousButton() {
+  const btn = document.getElementById('btnContinuous');
+  const sel = document.getElementById('intervalSelect');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = CONTINUOUS_ACTIVE ? '■ Stop 24/7' : '▶ Run 24/7';
+    btn.classList.toggle('active', CONTINUOUS_ACTIVE);
+  }
+  if (sel) sel.disabled = CONTINUOUS_ACTIVE;
+}
+
+function startNextCycleCountdown(nextIso) {
+  if (NEXT_CYCLE_TIMER) clearInterval(NEXT_CYCLE_TIMER);
+  const label = document.getElementById('nextCycleLabel');
+  if (!nextIso) { if (label) label.textContent = ''; return; }
+  const target = new Date(nextIso).getTime();
+  function tick() {
+    const remain = Math.max(0, Math.round((target - Date.now()) / 1000));
+    if (label) label.textContent = remain > 0 ? `Next scan in ${remain}s` : 'Starting next scan…';
+    if (remain <= 0) clearInterval(NEXT_CYCLE_TIMER);
+  }
+  tick();
+  NEXT_CYCLE_TIMER = setInterval(tick, 1000);
+}
+
+/* ── SSE ────────────────────────────────────────────────────────────── */
+let sse = null;
+function connectSSE() {
+  if (sse) sse.close();
+  sse = new EventSource('/stream');
+
+  sse.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      handleEvent(msg);
+    } catch {}
+  };
+
+  sse.onerror = () => {
+    setGlobalStatus('error', 'Reconnecting', 'Lost connection to server — retrying in 3s…');
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+function handleEvent(msg) {
+  const { kind, strategy, payload } = msg;
+
+  if (kind === 'snapshot') {
+    // Full state from server on connect
+    const st = payload.strategies || {};
+    for (const [key, data] of Object.entries(st)) {
+      if (data.results?.length) {
+        STATE[key].results = data.results;
+        setBadge(key, data.status);
+        if (key === 'vol_momentum') {
+          const nScored = data.results.filter(r => r.status === 'SCORED').length;
+          VM_FILTERED_COUNT = Math.max(0, (data.progress?.current || 0) - nScored);
+        }
+        renderStrategy(key);
+      }
+      if (data.status === 'running' || data.status === 'done') {
+        const p = data.progress;
+        setProgress(key, p.current, p.total || 1);
+      }
+    }
+    if (payload.continuous) {
+      CONTINUOUS_ACTIVE = true;
+      updateContinuousButton();
+      if (payload.next_cycle_at) startNextCycleCountdown(payload.next_cycle_at);
+    }
+    if (payload.running) {
+      setGlobalStatus('running', 'Running…', 'Strategies executing');
+      setPill('running', CONTINUOUS_ACTIVE ? '🔁 SCANNING…' : '⏳ RUNNING…');
+    }
+    return;
+  }
+
+  if (kind === 'run_started') {
+    // reset=true is a cold start (nothing on screen yet, or a manual re-run
+    // that intentionally clears the tables) — live-update as rows arrive.
+    // reset=false is a background continuous-mode cycle — the previous
+    // cycle's rows stay on screen exactly as they are until each strategy's
+    // pass finishes (see ticker_result / strategy_done below).
+    CYCLE_IS_FRESH = !!payload.reset;
+    if (CYCLE_IS_FRESH) {
+      setGlobalStatus('running', 'Running', 'All strategies started');
+    } else {
+      setGlobalStatus('running', `Cycle ${payload.cycle}`, 'Scanning in the background — current results stay on screen');
+    }
+    setPill('running', CONTINUOUS_ACTIVE ? '🔁 SCANNING…' : '⏳ RUNNING…');
+    const label = document.getElementById('nextCycleLabel');
+    if (label) label.textContent = '';
+    return;
+  }
+
+  if (kind === 'strategy_started') {
+    setBadge(strategy, 'running');
+    setGlobalDetail(`Running: ${payload.label}`);
+    return;
+  }
+
+  // ── ticker_result: full result payload — render row immediately ─────────────
+  if (kind === 'ticker_result') {
+    // Background cycle: don't touch the visible table row-by-row. The
+    // previous cycle's rows (with their own as_of timestamps) stay put; this
+    // strategy's table is swapped in wholesale once strategy_done fires.
+    if (!CYCLE_IS_FRESH) return;
+    if (strategy === 'vol_momentum') {
+      const r = payload;
+      if (r.status === 'SCORED') {
+        // Upsert by ticker (two-pass updates replace the original)
+        const idx = STATE.vol_momentum.results.findIndex(x => x.ticker === r.ticker);
+        if (idx >= 0) STATE.vol_momentum.results[idx] = r;
+        else          STATE.vol_momentum.results.push(r);
+        showSummaryFilters('vol_momentum');
+        renderVM();
+      }
+    } else if (strategy === 'calendar') {
+      const pairs = payload.pairs || [];
+      pairs.forEach(p => STATE.calendar.results.push(p));
+      if (pairs.length > 0) {
+        showSummaryFilters('calendar');
+        renderCal();
+      }
+    } else if (strategy === 'earnings') {
+      const r = payload;
+      STATE.earnings.results.push(r);
+      showSummaryFilters('earnings');
+      renderEarn();
+    } else if (strategy === 'put_selling') {
+      // Provisional row: priced but not yet weighted. Upsert by ticker so the
+      // authoritative strategy_done batch can replace it cleanly, and skip the
+      // summary strip entirely (book aggregates are meaningless mid-scan).
+      const r   = payload;
+      const idx = STATE.put_selling.results.findIndex(x => x.ticker === r.ticker);
+      if (idx >= 0) STATE.put_selling.results[idx] = r;
+      else          STATE.put_selling.results.push(r);
+      showTable('put_selling');
+      renderPS();
+    }
+    return;
+  }
+
+  /* Put-selling counts two independent sweeps (FCF screen, then option
+     pricing). The bar legitimately resets to 0% at the boundary, so name the
+     active phase or it reads as a hang/restart. */
+  if (kind === 'phase_update') {
+    if (strategy === 'put_selling') {
+      psSetPhase(payload.phase);
+      /* Boundary messages carry the only report of how many names survived the
+         FCF screen. There is no activity log in this dashboard, so surface it
+         in the status detail line rather than dropping it. */
+      if (payload.message) setGlobalDetail(`Put Selling: ${payload.message}`);
+    }
+    return;
+  }
+
+  if (kind === 'ticker_done') {
+    const p = payload.progress || {};
+    if (strategy === 'put_selling' && payload.phase) psSetPhase(payload.phase);
+    setProgress(strategy, p.current, p.total || 1);
+    document.getElementById(`count-${strategy}`).textContent =
+      p.total ? `${p.current} / ${p.total}` : '';
+    if (CYCLE_IS_FRESH && strategy === 'vol_momentum' && payload.status === 'FILTERED') {
+      VM_FILTERED_COUNT++;
+      VM_EXCLUDED.push({
+        ticker: payload.ticker || '—',
+        reason: payload.reason || 'Filtered',
+      });
+      const el = document.getElementById('vm-filtered');
+      if (el) el.textContent = VM_FILTERED_COUNT;
+      document.getElementById('summary-vol_momentum').style.display = '';
+      document.getElementById('filter-vol_momentum').style.display  = '';
+    }
+    return;
+  }
+
+  if (kind === 'strategy_done') {
+    setBadge(strategy, 'done');
+    setProgress(strategy, 1, 1, 'done');
+
+    /* Put-selling ships the authoritative weighted set and the book summary
+       inline on this event, so refetching /results would be a redundant round
+       trip that also leaves a window where provisional rows are still on
+       screen. Replace wholesale rather than upserting: any provisional ticker
+       that failed to price must disappear, not linger with stale numbers. */
+    if (strategy === 'put_selling') {
+      psSetPhase('');
+      if (payload && Array.isArray(payload.results)) {
+        STATE.put_selling.results = payload.results;
+        PS_SUMMARY = payload.summary || null;
+        if (STATE.put_selling.results.length) showSummaryFilters('put_selling');
+        renderPS();
+        document.getElementById('count-put_selling').textContent =
+          `${payload.count != null ? payload.count : payload.results.length} names`;
+        return;
+      }
+      // Fall through to the /results path if the payload arrived malformed.
+    }
+
+    // Fetch latest results for this strategy. This is the atomic swap point:
+    // whatever was on screen for this strategy (last cycle's rows, complete
+    // with their own timestamps) is replaced now, all at once, with the
+    // freshly-completed pass — never mid-scan.
+    fetch('/results').then(r => r.json()).then(data => {
+      const st = data.strategies?.[strategy];
+      if (st?.results) {
+        STATE[strategy].results = st.results;
+        if (strategy === 'put_selling') PS_SUMMARY = st.summary || null;
+        if (strategy === 'vol_momentum') {
+          const nScored = st.results.filter(r => r.status === 'SCORED').length;
+          VM_FILTERED_COUNT = Math.max(0, (st.progress?.current || 0) - nScored);
+          if (Array.isArray(st.excluded)) VM_EXCLUDED = st.excluded.slice();
+          const filtEl = document.getElementById('vm-filtered');
+          if (filtEl) filtEl.textContent = VM_FILTERED_COUNT;
+        }
+        renderStrategy(strategy);
+      }
+    });
+    return;
+  }
+
+  if (kind === 'strategy_error') {
+    setBadge(strategy, 'error');
+    setProgress(strategy, 1, 1, 'error');
+    return;
+  }
+
+  if (kind === 'run_complete') {
+    stopTimer();
+    if (CONTINUOUS_ACTIVE) {
+      setGlobalStatus('done', `Cycle ${payload.cycle} complete`, 'Waiting for the next scan…');
+      setPill('done', `✓ CYCLE ${payload.cycle}`);
+    } else {
+      setGlobalStatus('done', 'Complete', 'All strategies finished');
+      setPill('done', '✓ DONE');
+    }
+    return;
+  }
+
+  if (kind === 'continuous_started') {
+    CONTINUOUS_ACTIVE = true;
+    updateContinuousButton();
+    return;
+  }
+
+  // Server-side loop has begun sleeping between cycles — drive the countdown.
+  if (kind === 'cycle_sleep') {
+    setGlobalStatus('done', 'Idle between cycles', 'Current results stay on screen until the next scan');
+    setPill('done', '🔁 WAITING');
+    startNextCycleCountdown(payload.next_cycle_at);
+    return;
+  }
+
+  if (kind === 'stop_requested') {
+    setGlobalDetail(payload.mid_cycle
+      ? 'Stopping after the in-flight cycle finishes…'
+      : 'Stopping…');
+    return;
+  }
+
+  if (kind === 'continuous_stopped') {
+    CONTINUOUS_ACTIVE = false;
+    updateContinuousButton();
+    startNextCycleCountdown(null);
+    setGlobalStatus('idle', 'Stopped', 'Continuous scanning stopped — results are from the last completed cycle');
+    setPill('idle', '◈ IDLE');
+    return;
+  }
+}
+
+/* ── UI helpers ─────────────────────────────────────────────────────── */
+function setBadge(key, status) {
+  const el = document.getElementById(`badge-${key}`);
+  el.className = `strategy-badge badge-${status}`;
+  const labels = {idle:'Idle', running:'Running', done:'Done', error:'Error'};
+  el.textContent = labels[status] || status;
+
+  const dot = document.getElementById('globalDot');
+  dot.className = 'status-dot ' + (status === 'error' ? 'error' : status === 'done' ? '' : 'running');
+}
+
+function setProgress(key, current, total, cls = '') {
+  const pct  = total > 0 ? Math.round((current / total) * 100) : 0;
+  const fill = document.getElementById(`prog-${key}`);
+  fill.style.width = pct + '%';
+  fill.className   = 'progress-fill ' + cls;
+}
+
+function setGlobalStatus(dotClass, label, detail) {
+  document.getElementById('globalDot').className = 'status-dot ' + dotClass;
+  document.getElementById('globalStatus').textContent  = label;
+  document.getElementById('globalDetail').textContent  = detail;
+}
+function setGlobalDetail(text) {
+  document.getElementById('globalDetail').textContent = text;
+}
+
+/* The strategy module emits internal phase slugs; these are the operator-facing
+   names. Anything unmapped falls back to the raw slug so a new backend phase
+   still shows something rather than silently blanking the label. */
+const PS_PHASE_LABELS = {
+  fundamentals: 'Screening universe',
+  screened:     'FCF screen complete',
+  options:      'Pricing options',
+};
+
+/* Names the active put-selling sweep. The scan runs two independent passes
+   (FCF screen, then option pricing) and the progress bar restarts at 0% at the
+   boundary, which reads as a hang without this label. Pass '' to clear it when
+   the scan ends. */
+function psSetPhase(phase) {
+  const el = document.getElementById('ps-phase');
+  if (!el) return;
+  const label = phase ? (PS_PHASE_LABELS[phase] || phase) : '';
+  el.textContent = label;
+  el.classList.toggle('on', !!label);
+}
+
+function showEmpty(key) {
+  document.getElementById(`empty-${key}`).style.display  = '';
+  document.getElementById(`table-${key}`).style.display  = 'none';
+}
+function showTable(key) {
+  document.getElementById(`empty-${key}`).style.display  = 'none';
+  document.getElementById(`table-${key}`).style.display  = '';
+}
+/* Reveals the summary tiles + filter checkboxes for a strategy once its first
+   result arrives. Null-guarded: a missing node must never throw here, because
+   this runs immediately before renderXX() in the SSE path and an exception
+   would silently prevent every row from painting. */
+function showSummaryFilters(key) {
+  const summary = document.getElementById(`summary-${key}`);
+  const filter  = document.getElementById(`filter-${key}`);
+  if (summary) summary.style.display = '';
+  if (filter)  filter.style.display  = '';
+}
+
+function toggleSection(key) {
+  const body    = document.getElementById(`body-${key}`);
+  const title   = body.previousElementSibling.previousElementSibling
+                       .querySelector('.collapse-toggle');
+  const hidden  = body.classList.toggle('hidden');
+  if (title) title.classList.toggle('collapsed', hidden);
+}
+
+/* ── Render dispatcher ──────────────────────────────────────────────── */
+function renderStrategy(key) {
+  if (key === 'vol_momentum') renderVM();
+  else if (key === 'calendar') renderCal();
+  else if (key === 'earnings') renderEarn();
+  else if (key === 'put_selling') renderPS();
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+/* STRATEGY 1 — Vol & Momentum                                         */
+/* ──────────────────────────────────────────────────────────────────── */
+let vmSortKey = 'composite', vmSortDir = -1, vmFilter = 'all';
+
+/* ── Earnings cell ──────────────────────────────────────────────────
+   earnDays  : int|null  — calendar days until next earnings
+   earnDate  : str|null  — "YYYY-MM-DD"
+   dteCutoff : int       — days until position closes (DTE or dte_long)
+   Risky = earnings fall on or before position closes: earnDays <= dteCutoff
+─────────────────────────────────────────────────────────────────── */
+function earnCell(earnDays, earnDate, dteCutoff) {
+  if (earnDays == null || earnDate == null) return '<td class="td-dim">—</td>';
+  const risky = earnDays <= dteCutoff;
+  const label = earnDate + ' (' + earnDays + 'd)';
+  return risky
+    ? `<td><span class="earn-warn" title="⚠ Earnings in ${earnDays}d — before position closes in ${dteCutoff}d">⚠ ${label}</span></td>`
+    : `<td class="td-dim">${label}</td>`;
+}
+
+function setVMFilter(f, btn) {
+  vmFilter = f;
+  document.querySelectorAll('#filter-vol_momentum .filter-btn')
+          .forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderVM();
+}
+
+function sortVM(key) {
+  if (vmSortKey === key) vmSortDir *= -1; else { vmSortKey = key; vmSortDir = -1; }
+  document.querySelectorAll('#table-vol_momentum th')
+          .forEach(th => th.classList.remove('sort-asc','sort-desc'));
+  event.target.classList.add(vmSortDir === -1 ? 'sort-desc' : 'sort-asc');
+  renderVM();
+}
+
+function renderVM() {
+  const results = STATE.vol_momentum.results;
+  const scored  = results.filter(r => r.status === 'SCORED');
+  // Update summary
+  const buy = scored.filter(r => r.conclusion === 'BUY SPREAD').length;
+  const con = scored.filter(r => r.conclusion === 'CONSIDER').length;
+  const avd = scored.filter(r => r.conclusion === 'AVOID').length;
+
+  document.getElementById('vm-total').textContent    = scored.length;
+  document.getElementById('vm-buy').textContent      = buy;
+  document.getElementById('vm-consider').textContent = con;
+  document.getElementById('vm-avoid').textContent    = avd;
+  document.getElementById('vm-filtered').textContent = VM_FILTERED_COUNT;
+
+  if (results.length > 0) {
+    document.getElementById('summary-vol_momentum').style.display = '';
+    document.getElementById('filter-vol_momentum').style.display  = '';
+  }
+
+  const q = (document.getElementById('vm-search')?.value || '').trim().toUpperCase();
+
+  const vmEarnOn   = document.getElementById('vm-earn-filter')?.checked   ?? true;
+  const vmVolOn    = document.getElementById('vm-vol-filter')?.checked    ?? true;
+  const vmSpreadOn = document.getElementById('vm-spread-filter')?.checked ?? true;
+  let rows = scored.filter(r => {
+    if (vmFilter !== 'all' && r.conclusion !== vmFilter) return false;
+    if (q && !r.ticker?.toUpperCase().includes(q)) return false;
+    // Earnings risk: hide tickers where earnings fall on/before expiry
+    if (vmEarnOn   && r.earn_days     != null && r.earn_days <= (r.dte ?? 0)) return false;
+    // Volume filter: hide tickers with avg 30d volume < 1.5M shares/day
+    if (vmVolOn    && r.avg_vol_30d   != null && r.avg_vol_30d < 1.5) return false;
+    // Spread filter: hide tickers where max leg spread > 30%
+    if (vmSpreadOn && r.leg_spread_max != null && r.leg_spread_max > 0.30) return false;
+    return true;
+  });
+
+  rows.sort((a,b) => {
+    let av = a[vmSortKey] ?? '', bv = b[vmSortKey] ?? '';
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    return av < bv ? vmSortDir : av > bv ? -vmSortDir : 0;
+  });
+
+  if (rows.length === 0 && results.length === 0) { showEmpty('vol_momentum'); return; }
+  showTable('vol_momentum');
+
+  const conclusionClass = {
+    'BUY SPREAD': 'verdict-buy',
+    'CONSIDER':   'verdict-con',
+    'AVOID':      'verdict-avoid',
+  };
+
+  const html = rows.map(r => {
+    const score  = r.composite ?? 0;
+    const barPct = Math.round(Math.min(100, Math.max(0, score)));
+    const cls    = conclusionClass[r.conclusion] || 'verdict-error';
+    const conLabel = r.conclusion === 'BUY SPREAD' ? '▲ BUY' : r.conclusion === 'CONSIDER' ? '◆ CON' : '▼ AVD';
+    const enc = encodeURIComponent(JSON.stringify({_type:'vm', ticker:r.ticker, direction:r.direction,
+      spot:r.spot, long_strike:r.long_strike, short_strike:r.short_strike,
+      long_delta:r.long_delta, short_delta:r.short_delta,
+      atm_iv:r.atm_iv, otm_iv:r.otm_iv, dte:r.dte, expiry:r.expiry,
+      conclusion:r.conclusion, composite:r.composite,
+      long_bid:r.long_bid, long_ask:r.long_ask, long_mid:r.long_mid,
+      short_bid:r.short_bid, short_ask:r.short_ask, short_mid:r.short_mid,
+      avg_vol_30d:r.avg_vol_30d, leg_spread_max:r.leg_spread_max}));
+    return `<tr class="clickable-row" onclick='openPayoff(JSON.parse(decodeURIComponent("${enc}")))'>
+      <td class="td-ticker">${r.ticker}</td>
+      <td>
+        <div class="score-wrap">
+          <div class="score-bar-bg"><div class="score-bar-fill" style="width:${barPct}%"></div></div>
+          <span class="score-val">${score.toFixed(1)}</span>
+        </div>
+      </td>
+      <td><span class="verdict ${cls}">${conLabel}</span></td>
+      <td style="color:${r.direction==='CALL'?'var(--green)':'var(--red)'};font-weight:600">${r.direction}</td>
+      <td class="td-spot">$${(r.spot??0).toFixed(2)}</td>
+      <td class="td-dim">${r.expiry??'—'}</td>
+      <td class="td-dim">${r.dte??'—'}</td>
+      <td class="td-dim">${r.long_strike??'—'}/${r.short_strike??'—'}</td>
+      <td>${((r.atm_iv??0)*100).toFixed(1)}%</td>
+      <td>${((r.otm_iv??0)*100).toFixed(1)}%</td>
+      <td>${((r.rv20??0)*100).toFixed(1)}%</td>
+      <td style="color:${(r.vrp??0)<=0?'var(--green)':'var(--red)'}">${(r.vrp??0).toFixed(3)}</td>
+      <td style="color:${(r.raw_skew??0)<0?'var(--green)':'var(--dim)'}">${(r.raw_skew??0).toFixed(3)}</td>
+      <td class="factor-val" style="color:${fColor(r.f1)}">${(r.f1??0).toFixed(0)}</td>
+      <td class="factor-val" style="color:${fColor(r.f2)}">${(r.f2??0).toFixed(0)}</td>
+      <td class="factor-val" style="color:${fColor(r.f3)}">${(r.f3??0).toFixed(0)}</td>
+      <td class="factor-val" style="color:${fColor(r.f4)}">${(r.f4??0).toFixed(0)}</td>
+      <td class="td-dim">${r.sector??'—'}</td>
+      ${earnCell(r.earn_days, r.earn_date, r.dte ?? 0)}
+      ${tsCell(r.as_of)}
+    </tr>`;
+  }).join('');
+
+  document.getElementById('tbody-vol_momentum').innerHTML =
+    html || `<tr><td colspan="20" class="empty-state"><div class="empty-text">No results match filter</div></td></tr>`;
+}
+
+function fColor(v) {
+  if (v == null) return 'var(--dim)';
+  if (v >= 70) return 'var(--green)';
+  if (v >= 40) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+/* STRATEGY 2 — Calendar Spread                                        */
+/* ──────────────────────────────────────────────────────────────────── */
+let calSortKey = 'ff', calSortDir = -1, calFilter = 'all';
+
+function setCalFilter(f, btn) {
+  calFilter = f;
+  document.querySelectorAll('#filter-calendar .filter-btn')
+          .forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderCal();
+}
+
+function sortCal(key) {
+  if (calSortKey === key) calSortDir *= -1; else { calSortKey = key; calSortDir = -1; }
+  document.querySelectorAll('#table-calendar th')
+          .forEach(th => th.classList.remove('sort-asc','sort-desc'));
+  event.target.classList.add(calSortDir === -1 ? 'sort-desc' : 'sort-asc');
+  renderCal();
+}
+
+function renderCal() {
+  const results = STATE.calendar.results;
+  if (results.length === 0) { showEmpty('calendar'); return; }
+
+  document.getElementById('summary-calendar').style.display = '';
+  document.getElementById('filter-calendar').style.display  = '';
+
+  const tickers = [...new Set(results.map(r => r.ticker))];
+  const ffs     = results.map(r => r.ff ?? 0);
+  const bestFF  = Math.max(...ffs);
+  const avgFF   = ffs.reduce((a,b) => a+b, 0) / ffs.length;
+
+  document.getElementById('cal-pairs').textContent   = results.length;
+  document.getElementById('cal-tickers').textContent = tickers.length;
+  document.getElementById('cal-best-ff').textContent = bestFF.toFixed(1) + '%';
+  document.getElementById('cal-avg-ff').textContent  = avgFF.toFixed(1) + '%';
+
+  const q = (document.getElementById('cal-search')?.value || '').trim().toUpperCase();
+
+  const calEarnOn   = document.getElementById('cal-earn-filter')?.checked   ?? true;
+  const calVolOn    = document.getElementById('cal-vol-filter')?.checked    ?? true;
+  const calSpreadOn = document.getElementById('cal-spread-filter')?.checked ?? true;
+  let rows = results.filter(r => {
+    if (calFilter !== 'all' && r.bucket !== calFilter) return false;
+    if (q && !r.ticker?.toUpperCase().includes(q)) return false;
+    // Earnings risk: hide pairs where earnings fall before long leg expires
+    if (calEarnOn   && r.earn_days      != null && r.earn_days <= (r.dte_long ?? 0)) return false;
+    // Volume filter: hide pairs with avg 30d volume < 1.5M shares/day
+    if (calVolOn    && r.avg_vol_30d    != null && r.avg_vol_30d < 1.5) return false;
+    // Spread filter: hide pairs where max leg spread > 30%
+    if (calSpreadOn && r.leg_spread_max != null && r.leg_spread_max > 0.30) return false;
+    return true;
+  });
+
+  rows.sort((a,b) => {
+    let av = a[calSortKey] ?? '', bv = b[calSortKey] ?? '';
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    return av < bv ? calSortDir : av > bv ? -calSortDir : 0;
+  });
+
+  showTable('calendar');
+
+  const html = rows.map(r => {
+    const ffPct = Math.min(100, Math.max(0, ((r.ff ?? 0) / 100) * 100));
+    const enc = encodeURIComponent(JSON.stringify({_type:'cal', ticker:r.ticker,
+      spot:r.spot, strike:r.strike_short ?? r.strike_long,
+      iv_short:r.iv_short, iv_long:r.iv_long, forward_iv:r.forward_iv,
+      ff:r.ff, dte_short:r.dte_short, dte_long:r.dte_long,
+      exp_short:r.exp_short, exp_long:r.exp_long, gap_days:r.gap_days, bucket:r.bucket,
+      short_bid:r.short_bid, short_ask:r.short_ask, short_mid:r.short_mid,
+      long_bid:r.long_bid,   long_ask:r.long_ask,   long_mid:r.long_mid}));
+    return `<tr class="clickable-row" onclick='openPayoff(JSON.parse(decodeURIComponent("${enc}")))'>
+      <td class="td-ticker">${r.ticker}</td>
+      <td>
+        <div class="score-wrap">
+          <div class="score-bar-bg">
+            <div class="score-bar-fill" style="width:${ffPct}%;background:var(--purple)"></div>
+          </div>
+          <span class="score-val" style="color:var(--purple)">${(r.ff??0).toFixed(1)}%</span>
+        </div>
+      </td>
+      <td class="td-spot">$${(r.spot??0).toFixed(2)}</td>
+      <td class="td-dim">${r.exp_short??'—'}</td>
+      <td class="td-dim">${r.dte_short??'—'}</td>
+      <td>$${r.strike_short??'—'}</td>
+      <td>${(r.iv_short??0).toFixed(1)}%</td>
+      <td class="td-dim">${r.exp_long??'—'}</td>
+      <td class="td-dim">${r.dte_long??'—'}</td>
+      <td>$${r.strike_long??'—'}</td>
+      <td>${(r.iv_long??0).toFixed(1)}%</td>
+      <td style="color:var(--dim)">${(r.forward_iv??0).toFixed(1)}%</td>
+      <td class="td-dim">${r.gap_days??'—'}d</td>
+      <td><span class="verdict" style="background:var(--purple-dim);color:var(--purple);border:1px solid rgba(144,96,240,0.3)">${r.bucket??'—'}</span></td>
+      ${earnCell(r.earn_days, r.earn_date, r.dte_long ?? 0)}
+      ${tsCell(r.as_of)}
+    </tr>`;
+  }).join('');
+
+  document.getElementById('tbody-calendar').innerHTML =
+    html || `<tr><td colspan="16" class="empty-state"><div class="empty-text">No results match filter</div></td></tr>`;
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+/* STRATEGY 3 — Earnings                                               */
+/* ──────────────────────────────────────────────────────────────────── */
+let earnSortKey = 'earnings_date', earnSortDir = 1, earnFilter = 'all';
+
+function setEarnFilter(f, btn) {
+  earnFilter = f;
+  document.querySelectorAll('#filter-earnings .filter-btn')
+          .forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderEarn();
+}
+
+function sortEarn(key) {
+  if (earnSortKey === key) earnSortDir *= -1; else { earnSortKey = key; earnSortDir = 1; }
+  document.querySelectorAll('#table-earnings th')
+          .forEach(th => th.classList.remove('sort-asc','sort-desc'));
+  event.target.classList.add(earnSortDir === 1 ? 'sort-asc' : 'sort-desc');
+  renderEarn();
+}
+
+function renderEarn() {
+  const results = STATE.earnings.results;
+  if (results.length === 0) { showEmpty('earnings'); return; }
+
+  document.getElementById('summary-earnings').style.display = '';
+  document.getElementById('filter-earnings').style.display  = '';
+
+  const good  = results.filter(r => !r.error);
+  const errs  = results.filter(r => r.error);
+  const rec   = good.filter(r => r.verdict === 'Recommended').length;
+  const con   = good.filter(r => r.verdict === 'Consider').length;
+  const avd   = good.filter(r => r.verdict === 'Avoid').length;
+
+  document.getElementById('earn-total').textContent   = good.length;
+  document.getElementById('earn-rec').textContent     = rec;
+  document.getElementById('earn-consider').textContent = con;
+  document.getElementById('earn-avoid').textContent   = avd;
+  document.getElementById('earn-errors').textContent  = errs.length;
+
+  const q = (document.getElementById('earn-search')?.value || '').trim().toUpperCase();
+  const earnVolOn    = document.getElementById('earn-vol-filter')?.checked    ?? true;
+  const earnSpreadOn = document.getElementById('earn-spread-filter')?.checked ?? true;
+
+  let rows = results.filter(r => {
+    if (earnFilter !== 'all' && r.verdict !== earnFilter) return false;
+    if (q && !r.ticker?.toUpperCase().includes(q) &&
+             !(r.company||'').toUpperCase().includes(q)) return false;
+    // Volume filter: hide rows with avg 30d volume < 1.5M shares/day
+    if (earnVolOn    && r.avg_vol_m      != null && r.avg_vol_m < 1.5) return false;
+    // Spread filter: hide rows where max straddle leg spread > 30%
+    if (earnSpreadOn && r.leg_spread_max != null && r.leg_spread_max > 0.30) return false;
+    return true;
+  });
+
+  const verdictOrd = { Recommended: 0, Consider: 1, Avoid: 2 };
+  rows.sort((a,b) => {
+    if (earnSortKey === 'verdict') {
+      const av = verdictOrd[a.verdict] ?? 9, bv = verdictOrd[b.verdict] ?? 9;
+      return av < bv ? -earnSortDir : av > bv ? earnSortDir : 0;
+    }
+    let av = a[earnSortKey] ?? '', bv = b[earnSortKey] ?? '';
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    return av < bv ? -earnSortDir : av > bv ? earnSortDir : 0;
+  });
+
+  showTable('earnings');
+
+  const verdictCls = { Recommended: 'verdict-rec', Consider: 'verdict-con', Avoid: 'verdict-avoid' };
+
+  function pf(flag, val, dec=2) {
+    if (flag === undefined || flag === null) return '<span class="td-dim">—</span>';
+    const s = typeof val === 'number' ? val.toFixed(dec) : (val ?? '—');
+    const cls = flag ? 'check-pass' : 'check-fail';
+    const mark = flag ? '✓' : '✗';
+    return `<span class="${cls} factor-val">${s} ${mark}</span>`;
+  }
+
+  const html = rows.map(r => {
+    if (r.error) {
+      return `<tr>
+        <td class="td-ticker">${r.ticker}</td>
+        <td class="td-dim">${(r.company||'').substring(0,22)}</td>
+        <td class="td-dim">${r.earnings_date||'—'}</td>
+        <td class="td-dim">${r.earnings_time||'—'}</td>
+        <td><span class="verdict verdict-error">ERROR</span></td>
+        <td class="td-dim" colspan="4">${r.error}</td>
+        ${tsCell(r.as_of)}
+      </tr>`;
+    }
+    const vcls = verdictCls[r.verdict] || 'verdict-error';
+    const vLabel = r.verdict === 'Recommended' ? '▲ REC' : r.verdict === 'Consider' ? '◆ CON' : '▼ AVD';
+    const enc = encodeURIComponent(JSON.stringify({_type:'earn', ticker:r.ticker,
+      company:r.company, verdict:r.verdict, earnings_date:r.earnings_date,
+      expected_move:r.expected_move, iv30_rv30_val:r.iv30_rv30_val,
+      ts_slope_val:r.ts_slope_val, iv30_rv30:r.iv30_rv30, ts_slope:r.ts_slope,
+      avg_vol_m:r.avg_vol_m, avg_volume:r.avg_volume,
+      call_bid:r.call_bid, call_ask:r.call_ask, call_mid:r.call_mid,
+      put_bid:r.put_bid,   put_ask:r.put_ask,   put_mid:r.put_mid,
+      straddle_mid:r.straddle_mid,
+      // spot/strike/atm_iv_used are what put the payoff chart on a real price
+      // axis. Omitting them here silently forced _payoffEarn's $100-normalized
+      // fallback on EVERY row, because that fallback triggers on absence and
+      // absence was guaranteed by this whitelist -- not by missing backend data.
+      spot:r.spot, strike:r.strike, atm_iv_used:r.atm_iv_used}));
+    return `<tr class="clickable-row" onclick='openPayoff(JSON.parse(decodeURIComponent("${enc}")))'>
+      <td class="td-ticker">${r.ticker}</td>
+      <td class="td-dim" title="${r.company||''}">${(r.company||'').substring(0,22)}</td>
+      <td class="td-dim">${r.earnings_date||'—'}</td>
+      <td class="td-dim">${r.earnings_time||'—'}</td>
+      <td><span class="verdict ${vcls}">${vLabel}</span></td>
+      <td>${pf(r.avg_volume, r.avg_vol_m)}</td>
+      <td>${pf(r.iv30_rv30, r.iv30_rv30_val, 3)}</td>
+      <td>${pf(r.ts_slope,  r.ts_slope_val,  5)}</td>
+      <td class="td-dim">${r.expected_move||'—'}</td>
+      ${tsCell(r.as_of)}
+    </tr>`;
+  }).join('');
+
+  document.getElementById('tbody-earnings').innerHTML =
+    html || `<tr><td colspan="10" class="empty-state"><div class="empty-text">No results match filter</div></td></tr>`;
+}
+
+/* ======================================================================= */
+/* STRATEGY 4 — Cash-Secured Put Writing                                   */
+/*                                                                         */
+/* Differs from 1-3 in one structural way: a row is not final until every   */
+/* name is priced, because `weight_pct` / `contracts_per_100k` are          */
+/* portfolio-relative. The server streams provisional rows for feedback     */
+/* (marked `_provisional`) and then re-emits the authoritative weighted     */
+/* set on strategy_done. Provisional rows render greyed with "…" in the     */
+/* portfolio columns rather than showing a weight that is about to change.  */
+/* ======================================================================= */
+let psSortKey = 'weight_pct', psSortDir = -1, psFilter = 'all';
+
+function setPSFilter(f, btn) {
+  psFilter = f;
+  document.querySelectorAll('#filter-put_selling .filter-btn')
+          .forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPS();
+}
+
+function sortPS(key) {
+  if (psSortKey === key) psSortDir *= -1; else { psSortKey = key; psSortDir = -1; }
+  document.querySelectorAll('#table-put_selling th')
+          .forEach(th => th.classList.remove('sort-asc','sort-desc'));
+  event.target.classList.add(psSortDir === 1 ? 'sort-asc' : 'sort-desc');
+  renderPS();
+}
+
+/* ── Formatters ────────────────────────────────────────────────────────
+   Every one of these is null-tolerant. Put-selling rows legitimately carry
+   nulls (a name with no FCF data, an IV solve that failed), and `(null).toFixed`
+   would abort the whole innerHTML build and blank the entire table. */
+const _psD = '<span class="td-dim">—</span>';
+function psPct(v, dec = 1)    { return v == null ? _psD : (v * 100).toFixed(dec) + '%'; }
+function psPctRaw(v, dec = 2) { return v == null ? _psD : v.toFixed(dec) + '%'; }
+function psUsd(v, dec = 2)    { return v == null ? _psD : '$' + v.toFixed(dec); }
+function psNum(v, dec = 2)    { return v == null ? _psD : v.toFixed(dec); }
+function psMoneyTxt(v)        { return v == null ? '—' : '$' + Math.round(v).toLocaleString('en-US'); }
+function psMoney(v)           { return v == null ? _psD : '$' + Math.round(v).toLocaleString('en-US'); }
+
+/* Read-only echo of the server-side config. Derived from the rows rather than
+   a separate endpoint: `mode` and `weight_scheme` are stamped on every row by
+   the strategy itself, so this display cannot drift from what actually ran. */
+function psRenderConfig(rows) {
+  const el = document.getElementById('ps-config');
+  if (!el) return;
+  const r = rows.find(x => x && x.mode) || {};
+  const bits = [];
+  if (r.mode)          bits.push(`<span class="k">mode</span> <span class="v">${r.mode}</span>`);
+  if (r.weight_scheme) bits.push(`<span class="k">wt</span> <span class="v">${r.weight_scheme}</span>`);
+  const qs = rows.filter(x => x && x.fcfy_quintile != null).map(x => x.fcfy_quintile);
+  if (qs.length) {
+    const maxQ = Math.max.apply(null, qs);
+    bits.push(`<span class="k">q</span> <span class="v">${maxQ === 1 ? 'top only' : '1–' + maxQ}</span>`);
+  }
+  el.innerHTML = bits.join(' <span class="k">·</span> ');
+}
+
+/* Book-level tiles, written straight from the server's portfolio_summary block
+   (cached in PS_SUMMARY) and never recomputed from the visible rows — so
+   sorting or filtering the table cannot silently change the book totals. */
+function psRenderSummary(rows) {
+  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+
+  /* Until strategy_done delivers the cached summary there is no book: rows on
+     screen are provisional and unweighted. Deriving counts from them here would
+     both contradict the no-recompute rule and print totals that shift as the
+     user filters. Show placeholders instead of a number that looks final. */
+  if (!PS_SUMMARY) {
+    ['ps-count','ps-funded','ps-collateral','ps-premium','ps-bookyield',
+     'ps-avgiv','ps-avgdelta','ps-avgfcfy','ps-avgassign']
+      .forEach(id => set(id, '…'));
+    return;
+  }
+  const s = PS_SUMMARY;
+
+  set('ps-count',  s.count != null ? s.count : rows.length);
+  set('ps-funded', s.count_funded != null
+                   ? s.count_funded
+                   : rows.filter(r => (r.contracts_per_100k || 0) > 0).length);
+  set('ps-collateral', psMoneyTxt(s.total_collateral));
+  set('ps-premium',    psMoneyTxt(s.total_premium));
+  /* Period yield, not annualised. The annualised figure assumes the cycle
+     repeats at the same premium — precisely the assumption that breaks when
+     vol collapses, so it is not the headline number. */
+  set('ps-bookyield',  s.book_period_yield != null ? (s.book_period_yield * 100).toFixed(2) + '%' : '—');
+  set('ps-avgiv',      s.avg_iv          != null ? (s.avg_iv * 100).toFixed(1) + '%'   : '—');
+  set('ps-avgdelta',   s.avg_abs_delta   != null ? s.avg_abs_delta.toFixed(3)          : '—');
+  set('ps-avgfcfy',    s.avg_fcf_yield   != null ? (s.avg_fcf_yield * 100).toFixed(2) + '%' : '—');
+  set('ps-avgassign',  s.avg_assign_prob != null ? (s.avg_assign_prob * 100).toFixed(1) + '%' : '—');
+}
+
+function renderPS() {
+  const results = STATE.put_selling.results;
+  if (!results || results.length === 0) { showEmpty('put_selling'); return; }
+
+  showSummaryFilters('put_selling');
+  psRenderConfig(results);
+  psRenderSummary(results);
+
+  const q        = (document.getElementById('ps-search')?.value || '').trim().toUpperCase();
+  const spreadOn = document.getElementById('ps-spread-filter')?.checked ?? true;
+  const oiOn     = document.getElementById('ps-oi-filter')?.checked     ?? true;
+
+  let rows = results.filter(r => {
+    if (psFilter === 'funded'     && !((r.contracts_per_100k || 0) > 0)) return false;
+    if (psFilter === 'target_met' && !r.target_met) return false;
+    if (q && !(r.ticker || '').toUpperCase().includes(q)) return false;
+    /* Liquidity gates apply only when the field is present, so a name with a
+       missing quote is surfaced for inspection instead of vanishing. */
+    if (spreadOn && r.spread_ratio  != null && r.spread_ratio > 0.30) return false;
+    if (oiOn     && r.open_interest != null && r.open_interest <= 0)  return false;
+    return true;
+  });
+
+  rows.sort((a, b) => {
+    let av = a[psSortKey], bv = b[psSortKey];
+    /* Nulls sort last in both directions: a name with no data is never the
+       answer to "show me the biggest weight". */
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    return av < bv ? -psSortDir : av > bv ? psSortDir : 0;
+  });
+
+  showTable('put_selling');
+
+  const html = rows.map(r => {
+    const prov = !!r._provisional;
+    /* Provisional rows have no meaningful weight yet. Showing the pre-weighting
+       value would give the user an actionable number guaranteed to change. */
+    const wCell = prov ? '<span class="td-dim">…</span>' : psPctRaw(r.weight_pct, 2);
+    const cCell = prov ? '<span class="td-dim">…</span>'
+                       : ((r.contracts_per_100k || 0) > 0
+                          ? `<span style="color:var(--green);font-weight:600">${r.contracts_per_100k}</span>`
+                          : '<span class="td-dim">0</span>');
+    const pCell = prov ? '<span class="td-dim">…</span>' : psMoney(r.premium_cash_at_weight);
+
+    /* target_met is a diagnostic, not a filter, in the strategy itself: the name
+       is kept and flagged. Mirror that here with a marker rather than hiding it. */
+    const flag = r.target_met === false
+      ? ' <span class="earn-warn" title="Selected strike missed the mode target">&#9651;</span>'
+      : '';
+
+    const enc = encodeURIComponent(JSON.stringify({_type:'ps', ticker:r.ticker,
+      spot:r.spot, strike:r.strike, premium:r.premium, dte:r.dte, expiry:r.expiry,
+      iv:r.iv, abs_delta:r.abs_delta, assign_prob:r.assign_prob,
+      bid:r.bid, ask:r.ask, collateral:r.collateral, prem_pct:r.prem_pct,
+      fcf_yield:r.fcf_yield, contracts_per_100k:r.contracts_per_100k,
+      weight_pct:r.weight_pct}));
+
+    return `<tr class="clickable-row" style="${prov ? 'opacity:.45' : ''}" onclick='openPayoff(JSON.parse(decodeURIComponent("${enc}")))'>
+      <td class="td-ticker">${r.ticker || '—'}${flag}</td>
+      <td>${wCell}</td>
+      <td>${cCell}</td>
+      <td class="td-spot">${psUsd(r.spot)}</td>
+      <td>${psUsd(r.strike)}</td>
+      <td class="td-dim">${psPctRaw(r.otm_pct, 1)}</td>
+      <td class="td-dim">${r.dte != null ? r.dte + 'd' : '—'}</td>
+      <td>${psUsd(r.premium)}</td>
+      <td style="color:var(--green)">${psPct(r.prem_pct, 2)}</td>
+      <td style="color:var(--yellow)">${psPct(r.iv, 1)}</td>
+      <td>${psNum(r.abs_delta, 3)}</td>
+      <td style="color:var(--yellow)">${psPct(r.assign_prob, 1)}</td>
+      <td style="color:var(--cyan)">${psPct(r.fcf_yield, 2)}</td>
+      <td>${pCell}</td>
+      <td class="td-dim">${psUsd(r.bid)} / ${psUsd(r.ask)}</td>
+      ${tsCell(r.as_of)}
+    </tr>`;
+  }).join('');
+
+  document.getElementById('tbody-put_selling').innerHTML =
+    html || `<tr><td colspan="16" class="empty-state"><div class="empty-text">No results match filter</div></td></tr>`;
+}
+
+
+/* ── On load: auto-start ────────────────────────────────────────────── */
+window.addEventListener('DOMContentLoaded', () => {
+  // Update status immediately so "Connecting to server…" doesn't persist
+  setGlobalStatus('idle', 'Ready', 'Reaching server…');
+
+  fetch('/results').then(r => r.json()).then(data => {
+    const st = data.strategies || {};
+    for (const [key, s] of Object.entries(st)) {
+      if (s.results?.length) {
+        STATE[key].results = s.results;
+        if (key === 'vol_momentum') {
+          const nScored = s.results.filter(r => r.status === 'SCORED').length;
+          VM_FILTERED_COUNT = Math.max(0, (s.progress?.current || 0) - nScored);
+          // Server keeps the authoritative exclusion list, so a page reload
+          // restores the reasons instead of showing a bare count.
+          if (Array.isArray(s.excluded)) VM_EXCLUDED = s.excluded.slice();
+        }
+        if (key === 'put_selling') {
+          // Book aggregates are never recomputed from the visible rows, so a
+          // reload has to restore the server's cached summary or the portfolio
+          // columns render blank against a fully populated table.
+          PS_SUMMARY = s.summary || null;
+        }
+        renderStrategy(key);
+        setBadge(key, s.status || 'done');
+      }
+    }
+    if (data.continuous) {
+      CONTINUOUS_ACTIVE = true;
+      updateContinuousButton();
+      if (data.next_cycle_at) startNextCycleCountdown(data.next_cycle_at);
+      // Reflect the server's actual interval (it may differ from the
+      // dropdown's default if CONTINUOUS_INTERVAL_SEC was overridden).
+      const sel = document.getElementById('intervalSelect');
+      if (sel && data.continuous_interval_sec) {
+        const has = [...sel.options].some(o => Number(o.value) === data.continuous_interval_sec);
+        if (has) sel.value = String(data.continuous_interval_sec);
+      }
+    }
+
+    if (data.running) {
+      setPill('running', CONTINUOUS_ACTIVE ? '🔁 SCANNING…' : '⏳ RUNNING…');
+      setGlobalStatus('running', 'Running', 'Strategies in progress — reconnecting…');
+      connectSSE();
+    } else if (data.continuous) {
+      // Loop thread is alive and currently sleeping between cycles.
+      setGlobalStatus('done', 'Continuous mode active', 'Waiting for the next scan…');
+      setPill('done', '🔁 WAITING');
+      connectSSE();
+    } else if (data.phase && data.phase !== 'idle') {
+      // Previous run completed — show results, offer re-run
+      setGlobalStatus('done', 'Complete', 'Previous scan loaded. Server ready.');
+      setPill('done', '✓ DONE');
+      connectSSE();  // still connect to catch any new events
+    } else {
+      // Continuous scanning is the default behavior end-to-end: the server
+      // auto-starts its own loop at boot (CONTINUOUS_DEFAULT), and this is
+      // the fallback for the rare case it didn't (e.g. launched with
+      // CONTINUOUS_DEFAULT=false) — start looping rather than firing a
+      // single one-shot run that would then block a later manual toggle.
+      setGlobalStatus('idle', 'Ready', 'Server connected — starting continuous scan…');
+      startContinuousMode();
+    }
+  }).catch((e) => {
+    setGlobalStatus('error', 'Server unreachable', `Cannot connect: ${e.message}. Is server.py running on port 8000?`);
+    setPill('error', '✕ ERROR');
+    // Retry after 5s
+    setTimeout(() => window.location.reload(), 5000);
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════
+   PAYOFF DIAGRAM ENGINE
+   ══════════════════════════════════════════════════════════════════════ */
+
+function openPayoff(d) {
+  document.getElementById('payoffModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  _buildPayoff(d);
+}
+function closePayoff() {
+  document.getElementById('payoffModal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePayoff(); });
+
+/* ── Dispatch by strategy type ─────────────────────────────────────── */
+function _buildPayoff(d) {
+  if (d._type === 'vm')   _payoffVM(d);
+  if (d._type === 'cal')  _payoffCal(d);
+  if (d._type === 'earn') _payoffEarn(d);
+  if (d._type === 'ps')   _payoffPS(d);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Strategy 4 — Short Cash-Secured Put (single leg, naked short put fully
+   collateralised). Payoff is linear below the strike and flat above it:
+     P&L = premium − max(0, K − S)      (×100 per contract)
+   Max gain is the premium; the loss side is bounded only by S → 0, which
+   is why the collateral figure and not the margin figure is the honest
+   capital number for this trade.
+   ────────────────────────────────────────────────────────────────────── */
+function _payoffPS(d) {
+  const spot = d.spot;
+  const K    = d.strike;
+  const prem = d.premium != null ? d.premium
+             : (d.bid != null && d.ask != null ? (d.bid + d.ask) / 2 : 0);
+
+  const be   = K - prem;                       // breakeven at expiry
+  const coll = d.collateral != null ? d.collateral : K * 100;
+
+  /* Window widened on the downside: the whole point of the diagram is the
+     assignment tail, so cutting it off at −12% would hide the risk. */
+  const xMin = Math.min(spot, K) * 0.70;
+  const xMax = Math.max(spot, K) * 1.15;
+  const pts  = [];
+  for (let x = xMin; x <= xMax; x += (xMax - xMin) / 300) {
+    pts.push([x, (prem - Math.max(0, K - x)) * 100]);
+  }
+
+  const maxLossAtZero = (prem - K) * 100;
+  const fmtP = (v, dec = 1) => v == null ? '—' : (v * 100).toFixed(dec) + '%';
+
+  _drawChart({
+    title: `${d.ticker} — Short Cash-Secured Put`,
+    sub:   `Expiry: ${d.expiry||'—'}  ·  DTE: ${d.dte||'—'}  ·  Weight: ${d.weight_pct!=null?d.weight_pct.toFixed(2)+'%':'—'}`,
+    meta: [
+      { lbl:'Spot',            val:'$'+spot.toFixed(2) },
+      { lbl:'Short Put',       val:`$${K.toFixed(2)}  ${d.abs_delta!=null?d.abs_delta.toFixed(3)+'Δ':''}  IV ${fmtP(d.iv)}`, col:'var(--red)' },
+      { lbl:'  Bid / Ask',     val:(d.bid!=null?'$'+d.bid.toFixed(2):'—')+' / '+(d.ask!=null?'$'+d.ask.toFixed(2):'—'), col:'var(--dim)' },
+      { lbl:'Premium',         val:'+$'+(prem*100).toFixed(0)+'/contract  ('+fmtP(d.prem_pct,2)+' of strike)', col:'var(--green)' },
+      { lbl:'Collateral',      val:'$'+Math.round(coll).toLocaleString('en-US')+'/contract', col:'var(--yellow)' },
+      { lbl:'Breakeven',       val:'$'+be.toFixed(2)+'  ('+((be/spot-1)*100).toFixed(1)+'% from spot)' },
+      { lbl:'P(assignment)',   val:fmtP(d.assign_prob), col:'var(--yellow)' },
+      { lbl:'FCF Yield',       val:fmtP(d.fcf_yield,2), col:'var(--cyan)' },
+      { lbl:'Contracts /100k', val:d.contracts_per_100k!=null?String(d.contracts_per_100k):'—' },
+    ],
+    lines: [{
+      pts, color:'#00e896', width:2.5, fill:true,
+      markers:[
+        { x:K,  lbl:`Strike $${K.toFixed(1)}`, col:'var(--red)' },
+        { x:be, lbl:`BE $${be.toFixed(1)}`,    col:'var(--yellow)' },
+      ],
+    }],
+    spot, xMin, xMax,
+    legend:[{ col:'#00e896', lbl:'Short put P&L at expiry (per contract)' }],
+    note:`Sell the $${K.toFixed(2)} put for $${(prem*100).toFixed(0)}/contract against $${Math.round(coll).toLocaleString('en-US')} of set-aside cash. Keep the full premium if the stock finishes above $${K.toFixed(2)} — risk-neutral odds of that are ${d.assign_prob!=null?(100-d.assign_prob*100).toFixed(0)+'%':'—'}. Below $${be.toFixed(2)} the position loses money, dollar-for-dollar with the stock, down to $${Math.abs(maxLossAtZero).toFixed(0)} if it goes to zero. Assignment is not the failure case here: it leaves you long ${d.ticker} at an effective $${be.toFixed(2)}, which is the trade this book is willing to own — the FCF-yield screen (${fmtP(d.fcf_yield,2)}) exists to make that acceptable.`,
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Strategy 1 — Vertical Debit Spread
+   CALL direction → Bull Call Spread: Buy ~50Δ call, Sell ~15Δ OTM call
+   PUT  direction → Bear Put Spread:  Buy ~50Δ put,  Sell ~15Δ OTM put
+   (long_strike and short_strike come directly from extract_legs())
+   ───────────────────────────────────────────────────────────────────── */
+function _payoffVM(d) {
+  const spot   = d.spot;
+  const lk     = parseFloat(d.long_strike)  || spot;
+  const sk     = parseFloat(d.short_strike) || spot;
+  const isCall = d.direction === 'CALL';
+  const dLong  = d.long_delta  || 0.50;
+  const dShort = d.short_delta || 0.15;
+  const dte    = d.dte || 10;
+  const width  = Math.abs(sk - lk);
+
+  // Bid/ask data from server (computed at scan time from live quotes)
+  const lBid = d.long_bid  != null ? d.long_bid  : null;
+  const lAsk = d.long_ask  != null ? d.long_ask  : null;
+  const lMid = d.long_mid  != null ? d.long_mid  : null;
+  const sBid = d.short_bid != null ? d.short_bid : null;
+  const sAsk = d.short_ask != null ? d.short_ask : null;
+  const sMid = d.short_mid != null ? d.short_mid : null;
+
+  /* ── Net debit: pricing basis ──────────────────────────────────────
+     IB's order ticket and risk profile default to the MARKETABLE
+     ("natural") price: you lift the ask on the long leg and hit the bid
+     on the short leg.  Pricing off mid-mid understates the debit, which
+     inflates max profit and understates max loss by the SAME amount —
+     the tell-tale symmetric error (e.g. 222/472 vs 300/400: both off by
+     78 in opposite directions, while the width 7.00 is correct).
+     Natural price is the fillable number, so it is the default here. */
+  const debitMid = (lMid != null && sMid != null) ? (lMid - sMid) : null;
+  const debitNat = (lAsk != null && sBid != null) ? (lAsk - sBid) : null;
+
+  let debit, basis;
+  if (debitNat != null && debitNat > 0) {
+    debit = debitNat; basis = 'natural — buy ask / sell bid';
+  } else if (debitMid != null && debitMid > 0) {
+    debit = debitMid; basis = 'mid';
+  } else {
+    const iv = d.atm_iv || 0.25;
+    const T  = Math.max(1 / 365, dte / 365);
+    debit = spot * iv * Math.sqrt(T) * (dLong - dShort);
+    basis = 'IV estimate';
+  }
+  // A vertical debit can never exceed the strike width (arbitrage bound).
+  debit = Math.min(Math.max(0.01, debit), Math.max(0.02, width - 0.01));
+
+  const maxProfit = width - debit;   // long strike ITM, short strike capped
+  const maxLoss   = -debit;          // both legs expire worthless
+
+  /* Build payoff curve at expiry.  Window must ALWAYS contain both
+     strikes plus padding — a fixed ±12% band around spot clips the flat
+     max-profit shelf whenever the spread is wider than that band. */
+  const kLo  = Math.min(lk, sk), kHi = Math.max(lk, sk);
+  const pad  = Math.max((kHi - kLo) * 0.60, spot * 0.06);
+  const xMin = Math.max(0.01, Math.min(kLo, spot) - pad);
+  const xMax = Math.max(kHi, spot) + pad;
+  const pts  = [];
+  for (let x = xMin; x <= xMax; x += (xMax - xMin) / 300) {
+    let pnl;
+    if (isCall) {
+      pnl = (Math.max(0, x - lk) - Math.max(0, x - sk) - debit) * 100;
+    } else {
+      pnl = (Math.max(0, lk - x) - Math.max(0, sk - x) - debit) * 100;
+    }
+    pts.push([x, pnl]);
+  }
+
+  const be = isCall ? lk + debit : lk - debit;
+  const spreadType = isCall ? 'Bull Call Spread' : 'Bear Put Spread';
+  const color      = isCall ? '#00e896' : '#f04860';
+
+  // Format bid/ask display strings
+  const fba = (bid, ask, mid) => {
+    if (bid == null) return '—';
+    const spread = ask - bid;
+    const pct    = mid > 0 ? (spread / mid * 100).toFixed(0) : '?';
+    return `$${bid.toFixed(2)} / $${ask.toFixed(2)}  (mid $${mid.toFixed(2)}, ${pct}% spread)`;
+  };
+
+  _drawChart({
+    title: `${d.ticker} — ${spreadType}`,
+    sub:   `Expiry: ${d.expiry||'—'}  ·  DTE: ${d.dte||'—'}  ·  Score: ${(d.composite||0).toFixed(1)}`,
+    meta: [
+      { lbl:'Spot',         val:'$'+spot.toFixed(2) },
+      { lbl:'Long Leg',     val:`$${lk.toFixed(2)}  ${(dLong*100).toFixed(0)}Δ  IV ${((d.atm_iv||0)*100).toFixed(1)}%`, col:'var(--green)' },
+      { lbl:'  Bid / Ask',  val: fba(lBid, lAsk, lMid), col:'var(--dim)' },
+      { lbl:'Short Leg',    val:`$${sk.toFixed(2)}  ${(dShort*100).toFixed(0)}Δ  IV ${((d.otm_iv||0)*100).toFixed(1)}%`, col:'var(--red)' },
+      { lbl:'  Bid / Ask',  val: fba(sBid, sAsk, sMid), col:'var(--dim)' },
+      { lbl:'Net Debit',    val:'$'+(debit*100).toFixed(0)+'/contract  ('+basis+')', col:'var(--yellow)' },
+      { lbl:'Strike Width', val:'$'+width.toFixed(2)+'  (risk $'+(width*100).toFixed(0)+'/contract)', col:'var(--dim)' },
+      { lbl:'Max Profit',   val:'+$'+(maxProfit*100).toFixed(0)+'/contract', col:'var(--green)' },
+      { lbl:'Max Loss',     val:'-$'+(debit*100).toFixed(0)+'/contract',     col:'var(--red)' },
+      { lbl:'Breakeven',    val:'$'+be.toFixed(2) },
+    ],
+    lines: [{
+      pts, color, width:2.5, fill:true,
+      markers:[
+        { x:lk, lbl:`Long $${lk.toFixed(1)}`,  col:'var(--green)' },
+        { x:sk, lbl:`Short $${sk.toFixed(1)}`,  col:'var(--red)' },
+        { x:be, lbl:`BE $${be.toFixed(1)}`,     col:'var(--yellow)' },
+      ],
+    }],
+    spot, xMin, xMax,
+    legend:[{ col:color, lbl:`${spreadType} P&L at expiry (per contract)` }],
+    note:`${spreadType} — buy the ${isCall?'lower':'higher'} strike ${isCall?'call':'put'} (~50Δ) at $${lk.toFixed(2)} and sell the ${isCall?'higher':'lower'} strike ${isCall?'call':'put'} (~15Δ) at $${sk.toFixed(2)}. Net debit: $${(debit*100).toFixed(0)}/contract${lMid!=null?' (from live bid/ask mid at scan time)':' (IV estimate)'}. Max profit $${(maxProfit*100).toFixed(0)} if stock is ${isCall?'above':'below'} $${sk.toFixed(2)} at expiry. Max loss $${(debit*100).toFixed(0)} if stock finishes ${isCall?'below':'above'} $${lk.toFixed(2)}. Breakeven at $${be.toFixed(2)}.`,
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Strategy 2 — Calendar Spread
+   Buy back-month call at ATM strike, sell front-month call at same strike.
+   Profit from faster theta decay of short leg + forward IV compression.
+   Payoff shown at SHORT expiry (theta P&L captured).
+   ───────────────────────────────────────────────────────────────────── */
+function _payoffCal(d) {
+  const spot   = d.spot;
+  const strike = d.strike || spot;
+
+  // iv_short / iv_long / forward_iv stored as % (e.g. 47.0 = 47%) — divide by 100 for math
+  const ivS   = (d.iv_short   || 20) / 100;
+  const ivL   = (d.iv_long    || 25) / 100;
+  const fwdIV = (d.forward_iv || 22) / 100;
+  const dteS  = d.dte_short || 30;
+  const dteL  = d.dte_long  || 60;
+
+  // ── Full Black-Scholes call pricer (r=0, sufficient for display) ──────────
+  function N(x) {
+    const t = 1 / (1 + 0.2316419 * Math.abs(x));
+    const p = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937
+            + t * (-1.821255978 + t * 1.330274429))));
+    const pdf = Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+    const cdf = 1 - pdf * p;
+    return x >= 0 ? cdf : 1 - cdf;
+  }
+  function bsCall(S, K, sigma, T) {
+    if (T <= 0 || sigma <= 0 || S <= 0) return Math.max(0, S - K);
+    const sq = Math.sqrt(T);
+    const d1 = (Math.log(S / K) + 0.5 * sigma * sigma * T) / (sigma * sq);
+    const d2 = d1 - sigma * sq;
+    return S * N(d1) - K * N(d2);
+  }
+
+  // ── Entry prices ─────────────────────────────────────────────────────────
+  /* The debit MUST be anchored to live quotes when they exist. Pricing
+     the entry off theoretical BS while drawing the curve from the same
+     model hides all quote/model divergence, and the whole curve then
+     shifts vertically by that error — the single largest source of
+     disagreement with IB's risk profile.
+     Natural = buy the back month at ask, sell the front at bid. */
+  const calNat = (d.long_ask != null && d.short_bid != null)
+               ? d.long_ask - d.short_bid : null;
+  const calMid = (d.long_mid != null && d.short_mid != null)
+               ? d.long_mid - d.short_mid : null;
+
+  const priceShort = bsCall(spot, strike, ivS, dteS / 365);
+  const priceLong  = bsCall(spot, strike, ivL, dteL / 365);
+
+  let netDebit, calBasis;
+  if (calNat != null && calNat > 0) {
+    netDebit = calNat; calBasis = 'natural — buy ask / sell bid';
+  } else if (calMid != null && calMid > 0) {
+    netDebit = calMid; calBasis = 'mid';
+  } else {
+    netDebit = priceLong - priceShort; calBasis = 'theoretical (no quotes)';
+  }
+  netDebit = Math.max(0.001, netDebit);
+
+  /* Theoretical debit is retained only to report model-vs-market
+     divergence in the meta strip. It is NOT used to shift the curve:
+     subtracting netDebit already anchors both wings at -netDebit. */
+  const modelDebit = Math.max(0.001, priceLong - priceShort);
+  const debitEdge  = netDebit - modelDebit;
+
+  // ── At short expiry: back-month has (dteL-dteS) days left, still priced at ivL
+  // P&L(x) = -max(0, x-K)  [short call expires]
+  //         + bsCall(x, K, ivL, remainT)  [long call residual]
+  //         - netDebit   [anchored to live quotes, not to the model]
+  // Deep OTM: both → 0, so P&L → -netDebit  ✓
+  // ATM:      short = 0, long = max time value, P&L = peak profit  ✓
+  // Deep ITM: both → (x-K), cancel out, P&L → -netDebit  ✓
+  const remainT = Math.max(1, dteL - dteS) / 365;
+
+  /* Plot window must be volatility-scaled, not a fixed +/-18%.
+     The tent only flattens onto the -netDebit floor once the surviving
+     back-month call is decisively ITM/OTM, which is governed by
+     ivL*sqrt(remainT) (and by the front-month move, ivS*sqrt(dteS)).
+     On a 75% IV / 7-DTE name the fixed window cut off with the right
+     wing still 52% above the floor, so the chart read like an
+     unbounded-loss diagram instead of a capped calendar. Taking
+     2.8 sigma of whichever driver is larger brings every regime within
+     a few percent of the floor. Clamped to 12%..45% so quiet names
+     do not render an absurdly wide, flat chart. */
+  const sigFront = ivS * Math.sqrt(dteS / 365);
+  const sigResid = ivL * Math.sqrt(remainT);
+  const halfW    = Math.min(0.45, Math.max(0.12, 2.8 * Math.max(sigFront, sigResid)));
+
+  const xMin = spot * (1 - halfW);
+  const xMax = spot * (1 + halfW);
+  const pts  = [];   // IB convention  — back-month IV held at ivL
+  const ptsF = [];   // forward-IV case — back-month IV decays to fwdIV
+
+  /* Residual IV convention.
+     The previous build valued the surviving long leg at fwdIV. That is
+     the *implied forward* volatility — the market's break-even for the
+     back month — and it is materially below ivL. Pricing the residual
+     there strips real time value out of the only leg still alive, which
+     flattens the tent and understates max profit.
+     IB's risk profile holds each leg's IV constant at its current level
+     and only rolls time forward, so ivL is the correct primary basis.
+     fwdIV is still worth seeing, so it is drawn as a dashed downside
+     scenario rather than silently used as the headline curve. */
+  for (let i = 0; i <= 300; i++) {
+    const x        = xMin + (xMax - xMin) * i / 300;
+    const shortPnl = -Math.max(0, x - strike);
+    pts .push([x, (shortPnl + bsCall(x, strike, ivL,   remainT) - netDebit) * 100]);
+    ptsF.push([x, (shortPnl + bsCall(x, strike, fwdIV, remainT) - netDebit) * 100]);
+  }
+
+  // ── Breakevens ────────────────────────────────────────────────────────────
+  let beLo = null, beHi = null;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i-1][1] < 0 && pts[i][1] >= 0) beLo = pts[i][0];
+    if (pts[i-1][1] >= 0 && pts[i][1] < 0) beHi = pts[i][0];
+  }
+  const maxProfit = Math.max(...pts.map(p => p[1]));
+  const maxLoss   = -netDebit * 100;
+
+  const markers = [{ x: strike, lbl: `K $${strike.toFixed(1)}`, col: '#9060f0' }];
+  if (beLo) markers.unshift({ x: beLo, lbl: `BE $${beLo.toFixed(1)}`, col: 'var(--yellow)' });
+  if (beHi) markers.push(   { x: beHi, lbl: `BE $${beHi.toFixed(1)}`, col: 'var(--yellow)' });
+
+  // Bid/ask formatter for calendar legs
+  /* Each side must be guarded independently. Feeds routinely return a
+     partial book (an ask with no bid, or bid/ask with no mid), and the
+     previous version only null-checked `bid` -- so a missing ask or mid
+     threw inside the template literal and took the entire modal down
+     with it, leaving the previously rendered signal on screen. Degrade
+     to a dash per missing field instead. */
+  const fba2 = (bid, ask, mid) => {
+    const hasB = Number.isFinite(bid), hasA = Number.isFinite(ask);
+    if (!hasB && !hasA) return '—';
+    const m = Number.isFinite(mid) ? mid : (hasB && hasA ? (bid + ask) / 2 : null);
+    const bStr = hasB ? '$' + bid.toFixed(2) : '—';
+    const aStr = hasA ? '$' + ask.toFixed(2) : '—';
+    if (m == null || m <= 0) return `${bStr} / ${aStr}`;
+    const pct = (hasB && hasA)
+              ? ((ask - bid) / m * 100).toFixed(0) + '% spread'
+              : 'spread n/a';
+    return `${bStr} / ${aStr}  (mid $${m.toFixed(2)}, ${pct})`;
+  };
+
+  _drawChart({
+    title: `${d.ticker} — Calendar Spread (Call)`,
+    sub:   `Sell ${d.exp_short||'—'} (${dteS}d) · Buy ${d.exp_long||'—'} (${dteL}d) · Same ATM strike`,
+    meta: [
+      { lbl:'Spot',           val:'$'+spot.toFixed(2) },
+      { lbl:'Strike',         val:'$'+strike.toFixed(2) },
+      { lbl:'Short Leg (sell)', val:(d.exp_short||'—')+' '+dteS+'d  IV '+(ivS*100).toFixed(1)+'%', col:'var(--red)' },
+      { lbl:'  Bid / Ask',    val: fba2(d.short_bid, d.short_ask, d.short_mid), col:'var(--dim)' },
+      { lbl:'Long Leg (buy)', val:(d.exp_long||'—')+' '+dteL+'d  IV '+(ivL*100).toFixed(1)+'%', col:'var(--green)' },
+      { lbl:'  Bid / Ask',    val: fba2(d.long_bid, d.long_ask, d.long_mid),   col:'var(--dim)' },
+      { lbl:'Forward IV',     val:(fwdIV*100).toFixed(1)+'%', col:'var(--dim)'    },
+      { lbl:'FF%',            val:(d.ff||0).toFixed(1)+'%',   col:'var(--purple)' },
+      { lbl:'Net Debit',      val:'$'+netDebit.toFixed(2)+'/share  ($'+(netDebit*100).toFixed(0)+'/contract)', col:'var(--yellow)' },
+      { lbl:'  Debit Basis',  val: calBasis, col:'var(--dim)' },
+      { lbl:'  Model Debit',  val:'$'+modelDebit.toFixed(2)+'  ('+(debitEdge>=0?'+':'')+debitEdge.toFixed(2)+' vs market)',
+        col: Math.abs(debitEdge) > 0.15 * modelDebit ? 'var(--yellow)' : 'var(--dim)' },
+      { lbl:'Max Loss',       val:'$'+maxLoss.toFixed(0)+'/contract',   col:'var(--red)'   },
+      { lbl:'Max Profit',     val:'$'+maxProfit.toFixed(0)+'/contract', col:'var(--green)' },
+      { lbl:'Gap',            val:(d.gap_days||'?')+'d  ('+(d.bucket||'—')+')' },
+    ],
+    lines:[
+      { pts,  color:'#9060f0', width:2.5, fill:true, markers },
+      { pts:ptsF, color:'#5a7080', width:1.5, dash:[6,4] },
+    ],
+    spot, xMin, xMax,
+    legend:[
+      { col:'#9060f0', lbl:'P&L at short expiry \u2014 back-month IV held at '+(ivL*100).toFixed(1)+'% (IB convention)' },
+      { col:'#5a7080', lbl:'Scenario \u2014 back-month IV decays to forward '+(fwdIV*100).toFixed(1)+'%' },
+    ],
+    note:`Calendar spread: sell the ${dteS}-DTE call and buy the ${dteL}-DTE call at the same ATM strike ($${strike.toFixed(2)}). Max loss: $${Math.abs(maxLoss).toFixed(0)}/contract (net debit). Max profit: ~$${maxProfit.toFixed(0)}/contract near ATM at short expiry. Forward Factor ${(d.ff||0).toFixed(1)}% — front IV ${(ivS*100).toFixed(1)}% elevated vs implied forward ${(fwdIV*100).toFixed(1)}%. Wings show real losses: short call goes deep ITM faster than back-month gains. P&L is approximate — actual outcome depends on realized IV of back-month at front expiry.`,
+  });
+}
+/* ─────────────────────────────────────────────────────────────────────
+   Strategy 3 — Short Straddle (Earnings IV Sell)
+   Sell ATM call + Sell ATM put before earnings.
+   The strategy sells inflated earnings IV expecting mean reversion.
+   expected_move (straddle price) = the premium collected and breakeven.
+   ───────────────────────────────────────────────────────────────────── */
+function _payoffEarn(d) {
+  // expected_move is the straddle price as a % of spot (e.g. "5.23%")
+  // This IS the premium collected per share, and the breakeven distance.
+  const emStr   = String(d.expected_move || '5%').replace('%','').trim();
+  const emPct   = parseFloat(emStr) / 100 || 0.05;
+  const expMove = d.expected_move;
+
+  // The backend now emits spot/strike/atm_iv_used. Results cached before that
+  // change lack them, so fall back to the old $100-normalized axis rather than
+  // throwing -- an exception here leaves the already-open modal showing the
+  // previously rendered signal, which is exactly the bug this fixes.
+  const hasReal = Number.isFinite(d.spot) && d.spot > 0;
+  const S       = hasReal ? d.spot : 100;
+  const strike  = Number.isFinite(d.strike) && d.strike > 0 ? d.strike : S;
+  const iv      = Number.isFinite(d.atm_iv_used) && d.atm_iv_used > 0 ? d.atm_iv_used : null;
+
+  // Prefer the real straddle mid when present; otherwise derive from exp move.
+  const premium = (d.straddle_mid != null && d.straddle_mid > 0)
+                    ? d.straddle_mid
+                    : S * emPct;
+  const be_lo   = strike - premium; // lower breakeven
+  const be_hi   = strike + premium; // upper breakeven
+  const maxProfit = premium;        // if stock pins the strike
+
+  const xMin = S * 0.70;
+  const xMax = S * 1.30;
+  const pts  = [];
+  for (let x = xMin; x <= xMax; x += (xMax - xMin) / 300) {
+    // Short ATM call + Short ATM put, both struck at `strike`
+    const callPnl = -Math.max(0, x - strike);
+    const putPnl  = -Math.max(0, strike - x);
+    const pnl = (callPnl + putPnl + premium) * 100;  // per contract (100 shares)
+    pts.push([x, pnl]);
+  }
+
+  const ivTxt   = iv != null ? '  IV ' + (iv * 100).toFixed(1) + '%' : '';
+  const normTxt = hasReal ? '' : '  ·  Normalized to $100 spot';
+
+  const vcol = d.verdict === 'Recommended' ? 'var(--green)' :
+               d.verdict === 'Consider'     ? 'var(--yellow)' : 'var(--red)';
+
+  _drawChart({
+    title: `${d.ticker} — Short Straddle (Earnings IV)`,
+    sub:   `Earnings: ${d.earnings_date||'—'}  ·  ${d.company||''}${normTxt}`,
+    meta: [
+      { lbl:'Spot',          val:'$'+S.toFixed(2) },
+      { lbl:'ATM Call (sell)', val:'$'+strike.toFixed(2)+ivTxt, col:'var(--red)' },
+      { lbl:'  Bid / Ask',   val: (() => { const b=d.call_bid,a=d.call_ask,m=d.call_mid; if(!b)return'—'; const p=m>0?((a-b)/m*100).toFixed(0):'?'; return `$${b.toFixed(2)} / $${a.toFixed(2)}  (mid $${m.toFixed(2)}, ${p}% spread)`; })(), col:'var(--dim)' },
+      { lbl:'ATM Put (sell)', val:'$'+strike.toFixed(2)+ivTxt, col:'var(--red)' },
+      { lbl:'  Bid / Ask',   val: (() => { const b=d.put_bid,a=d.put_ask,m=d.put_mid; if(!b)return'—'; const p=m>0?((a-b)/m*100).toFixed(0):'?'; return `$${b.toFixed(2)} / $${a.toFixed(2)}  (mid $${m.toFixed(2)}, ${p}% spread)`; })(), col:'var(--dim)' },
+      { lbl:'Straddle Mid',  val: d.straddle_mid ? '$'+(d.straddle_mid).toFixed(2)+'/share  ($'+(d.straddle_mid*100).toFixed(0)+'/contract)' : '—', col:'var(--yellow)' },
+      { lbl:'Expected Move', val:expMove||'—', col:'var(--purple)' },
+      { lbl:'IV30/RV30',     val:(d.iv30_rv30_val||0).toFixed(3), col:d.iv30_rv30?'var(--green)':'var(--red)' },
+      { lbl:'TS Slope',      val:(d.ts_slope_val||0).toFixed(5),  col:d.ts_slope?'var(--green)':'var(--red)' },
+    ],
+
+    lines:[{
+      pts, color:'#f0b840', width:2.5, fill:true,
+      markers:[
+        { x:be_lo, lbl:`BE $${be_lo.toFixed(1)}`, col:'var(--red)' },
+        { x:be_hi, lbl:`BE $${be_hi.toFixed(1)}`, col:'var(--red)' },
+        { x:strike, lbl:`ATM $${strike.toFixed(strike<10?2:0)}`, col:'var(--cyan)' },
+      ],
+    }],
+    spot:S, xMin, xMax,
+    legend:[{ col:'#f0b840', lbl:'Short Straddle P&L at expiry'+(hasReal?'':' (normalized to $100 spot)') }],
+    note:`Short Straddle: sell the ATM call and ATM put ahead of earnings. Profits if the stock moves less than the expected move (${d.expected_move||'—'}). The signal fires when IV30/RV30 ≥ 1.25 (actual: ${(d.iv30_rv30_val||0).toFixed(3)}) and term structure is inverted (slope ${(d.ts_slope_val||0).toFixed(5)}), indicating earnings IV is elevated vs realized vol — a favorable sell-vol setup. Max profit $${(premium*100).toFixed(0)}/contract collected upfront. Breakeven: $${be_lo.toFixed(2)} – $${be_hi.toFixed(2)}. Losses are theoretically unlimited.${hasReal?'':' Spot was unavailable for this cached result \u2014 values are normalized to a $100 spot; scale by actual spot / $100.'}`,
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Canvas chart renderer
+   ───────────────────────────────────────────────────────────────────── */
+function _drawChart({ title, sub, meta, lines, spot, xMin, xMax, legend, note }) {
+  document.getElementById('payoffTitle').textContent = title;
+  document.getElementById('payoffSub').textContent   = sub || '';
+
+  // Meta strip
+  document.getElementById('payoffMeta').innerHTML = meta.map(m =>
+    `<div class="payoff-meta-cell">
+       <div class="payoff-meta-lbl">${m.lbl}</div>
+       <div class="payoff-meta-val" style="color:${m.col||'var(--text-bright)'}">${m.val}</div>
+     </div>`
+  ).join('');
+
+  // Legend
+  document.getElementById('payoffLegend').innerHTML = legend.map(l =>
+    `<div class="payoff-legend-item">
+       <span class="payoff-legend-line" style="background:${l.col}"></span>${l.lbl}
+     </div>`
+  ).join('');
+
+  // Note
+  document.getElementById('payoffNote').textContent = note || '';
+
+  // Canvas
+  const canvas = document.getElementById('payoffCanvas');
+  const dpr    = window.devicePixelRatio || 1;
+  const W      = canvas.parentElement.clientWidth || 796;
+  const H      = 340;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const PAD = { t:28, r:20, b:48, l:70 };
+  const cW  = W - PAD.l - PAD.r;
+  const cH  = H - PAD.t - PAD.b;
+
+  // Collect all Y values
+  const allY = lines.flatMap(l => l.pts.map(p => p[1]));
+  const yMin = Math.min(...allY);
+  const yMax = Math.max(...allY);
+  const yRange = yMax - yMin || 1;
+  const yLo  = yMin - yRange * 0.08;
+  const yHi  = yMax + yRange * 0.08;
+
+  const tx = v => PAD.l + ((v - xMin) / (xMax - xMin)) * cW;
+  const ty = v => PAD.t + (1 - (v - yLo) / (yHi - yLo)) * cH;
+
+  // Background
+  ctx.fillStyle = '#0b1018';
+  ctx.fillRect(0, 0, W, H);
+
+  // Y grid + labels
+  const ySteps = 6;
+  for (let i = 0; i <= ySteps; i++) {
+    const yv = yLo + (yHi - yLo) * (i / ySteps);
+    const cy = ty(yv);
+    ctx.strokeStyle = '#1a2535'; ctx.lineWidth = 1; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(PAD.l, cy); ctx.lineTo(PAD.l + cW, cy); ctx.stroke();
+    ctx.fillStyle = '#5a7080'; ctx.font = '10px "JetBrains Mono",monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText((yv >= 0 ? '+' : '') + yv.toFixed(0), PAD.l - 6, cy + 3.5);
+  }
+
+  // Zero line
+  const z0 = ty(0);
+  ctx.strokeStyle = '#3a4d63'; ctx.lineWidth = 1;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath(); ctx.moveTo(PAD.l, z0); ctx.lineTo(PAD.l + cW, z0); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#3a4d63'; ctx.font = '9px "JetBrains Mono",monospace'; ctx.textAlign = 'left';
+  ctx.fillText('0', PAD.l + 4, z0 - 3);
+
+  // Spot vertical line
+  const sx = tx(spot);
+  ctx.strokeStyle = 'rgba(0,200,232,0.3)'; ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(sx, PAD.t); ctx.lineTo(sx, PAD.t + cH); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(0,200,232,0.7)'; ctx.font = '9px "JetBrains Mono",monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('SPOT', sx, PAD.t - 5);
+
+  // X axis labels
+  const xSteps = 7;
+  for (let i = 0; i <= xSteps; i++) {
+    const xv = xMin + (xMax - xMin) * (i / xSteps);
+    ctx.fillStyle = '#5a7080'; ctx.font = '10px "JetBrains Mono",monospace'; ctx.textAlign = 'center';
+    ctx.fillText('$' + xv.toFixed(0), tx(xv), H - PAD.b + 16);
+  }
+
+  // Axis labels
+  ctx.save(); ctx.translate(14, PAD.t + cH / 2); ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = '#5a7080'; ctx.font = '10px "JetBrains Mono",monospace'; ctx.textAlign = 'center';
+  ctx.fillText('P&L at expiry ($)', 0, 0); ctx.restore();
+  ctx.fillStyle = '#5a7080'; ctx.font = '10px "JetBrains Mono",monospace'; ctx.textAlign = 'center';
+  ctx.fillText('Underlying price at expiry', PAD.l + cW / 2, H - 6);
+
+  // Draw lines + fills
+  lines.forEach(line => {
+    // Profit zone fill
+    if (line.fill) {
+      ctx.beginPath();
+      line.pts.forEach(([x, y], i) => {
+        const cx = tx(x), cy = ty(Math.max(y, 0));
+        i === 0 ? (ctx.moveTo(cx, ty(0)), ctx.lineTo(cx, cy)) : ctx.lineTo(cx, cy);
+      });
+      ctx.lineTo(tx(line.pts[line.pts.length-1][0]), ty(0));
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(0,232,150,0.08)'; ctx.fill();
+
+      // Loss zone
+      ctx.beginPath();
+      line.pts.forEach(([x, y], i) => {
+        const cx = tx(x), cy = ty(Math.min(y, 0));
+        i === 0 ? (ctx.moveTo(cx, ty(0)), ctx.lineTo(cx, cy)) : ctx.lineTo(cx, cy);
+      });
+      ctx.lineTo(tx(line.pts[line.pts.length-1][0]), ty(0));
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(240,72,96,0.08)'; ctx.fill();
+    }
+
+    // Main line  (line.dash = [6,4] renders a dashed scenario curve)
+    ctx.strokeStyle = line.color; ctx.lineWidth = line.width || 2;
+    ctx.setLineDash(line.dash || []);
+    ctx.beginPath();
+    line.pts.forEach(([x, y], i) => {
+      i === 0 ? ctx.moveTo(tx(x), ty(y)) : ctx.lineTo(tx(x), ty(y));
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Strike / breakeven markers
+    (line.markers || []).forEach(m => {
+      const mx = tx(m.x);
+      ctx.strokeStyle = m.col; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(mx, PAD.t + 18); ctx.lineTo(mx, PAD.t + cH); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = m.col; ctx.font = '9px "JetBrains Mono",monospace'; ctx.textAlign = 'center';
+      ctx.fillText(m.lbl, mx, PAD.t + 13);
+    });
+  });
+}
+
+/* ── Info modal ── */
+const INFO_CONTENT = {
+  vol_momentum: {
+    title: 'Vol & Momentum Screener',
+    sub:   'Strategy 01 · S&P 500 universe · 5–15 DTE vertical spreads',
+    body: `
+<div class="info-section"><div class="info-h">Strategy Overview</div>
+<p class="info-p">Scans the full S&P 500 for directional vertical spread opportunities using a 4-factor composite scoring engine. Direction (CALL/PUT) is chosen automatically from the momentum composite. Universe: options expiry 5–15 DTE, long leg near 50Δ, short leg near 15Δ via Black-Scholes. Earnings blackout removed — tickers with near-term earnings appear with a ⚠ warning.</p></div>
+<div class="info-section"><div class="info-h">Composite Score (0–100)</div>
+<table class="info-tbl"><thead><tr><th>Column</th><th>Weight</th><th>Formula / Logic</th><th>Scoring</th></tr></thead><tbody>
+<tr><td><span class="name">Skew Edge</span><br><span class="desc">F1 — IV Skew Edge</span></td><td><span class="wpill">40%</span></td><td>raw_skew = (ATM_IV − OTM_IV) / ATM_IV. Negative = OTM IV &gt; ATM IV (put skew favours seller).</td><td>≥0 → 0pts | −0.15 → 50pts | ≤−0.30 → 100pts</td></tr>
+<tr><td><span class="name">Momentum</span><br><span class="desc">F2 — 6-Factor Composite</span></td><td><span class="wpill-g">30%</span></td><td>Equal-weight average of M1–M6 sub-scores (each 0–100).</td><td>Average of 6 sub-scores</td></tr>
+<tr><td><span class="name">Vol Regime</span><br><span class="desc">F3 — VRP / Vol Regime</span></td><td><span class="wpill-y">20%</span></td><td>VRP = ATM_IV − RV_20D (annualised). Rewards buying vol when cheap vs recent realised moves.</td><td>VRP≤0 → 100pts | VRP=0.05 → 0pts (linear)</td></tr>
+<tr><td><span class="name">Skew Z</span><br><span class="desc">F4 — Cross-Sectional Skew Z</span></td><td><span class="wpill-p">10%</span></td><td>Z = (skew_i − median) / MAD across all scored tickers today. Two-pass: updated after full scan.</td><td>Z=−2 → 100pts | Z=0 → 50pts | Z=+2 → 0pts</td></tr>
+</tbody></table></div>
+<div class="info-section"><div class="info-h">F2 Momentum Sub-Factors (equal weight)</div>
+<table class="info-tbl"><thead><tr><th>Sub-factor</th><th>Formula</th><th>Anchors</th></tr></thead><tbody>
+<tr><td><span class="name">M1</span> Time-Series Momentum</td><td>21-day cumulative log return</td><td>±10% → ±50pts from centre 50</td></tr>
+<tr><td><span class="name">M2</span> Cross-Sectional Momentum</td><td>Percentile rank vs all scored peers today</td><td>Bottom → 0 | Top → 100</td></tr>
+<tr><td><span class="name">M3</span> Market Alpha (vs SPY)</td><td>21d return − SPY 21d return</td><td>±5% alpha → ±50pts from centre 50</td></tr>
+<tr><td><span class="name">M4</span> Sector Alpha (vs SPDR ETF)</td><td>21d return − sector ETF 21d return</td><td>±5% alpha → ±50pts from centre 50</td></tr>
+<tr><td><span class="name">M5</span> Volume Momentum</td><td>21d avg volume / 63d avg volume</td><td>1× flat → 50pts | 2× → 100pts</td></tr>
+<tr><td><span class="name">M6</span> 52-Week High Proximity</td><td>spot / 52-week high × 100</td><td>At 52w high → 100pts</td></tr>
+</tbody></table></div>
+<div class="info-section"><div class="info-h">Signal Thresholds</div>
+<table class="vdict-tbl">
+<tr><td><span class="wpill-g">▲ BUY SPREAD</span></td><td>Composite ≥ 75 — steep negative skew + momentum confirmed + cheap vol.</td></tr>
+<tr><td><span class="wpill-y">◆ CONSIDER</span></td><td>55 ≤ Composite &lt; 75 — good structure but one factor weak. Size down or monitor.</td></tr>
+<tr><td><span class="wpill-r">▼ AVOID</span></td><td>Composite &lt; 55 — insufficient skew edge, wrong vol regime, or adverse momentum.</td></tr>
+</table></div>`,
+  },
+  calendar: {
+    title: 'Calendar Spread Screener',
+    sub:   'Strategy 02 · S&P 500 filtered 1.5M–5M avg daily volume · Forward Factor signal',
+    body: `
+<div class="info-section"><div class="info-h">Strategy Overview</div>
+<p class="info-p">Identifies calendar spreads where front-month IV is significantly elevated vs the mathematically implied forward volatility. Trade: <strong>sell</strong> the ATM call at the shorter expiry, <strong>buy</strong> the ATM call at the longer expiry — same strike. Universe: S&P 500 filtered to 1.5M–5M avg daily volume.</p></div>
+<div class="info-section"><div class="info-h">Forward Factor (FF) — Core Signal</div>
+<table class="info-tbl"><thead><tr><th>Step</th><th>Formula</th><th>Meaning</th></tr></thead><tbody>
+<tr><td>Forward IV</td><td>√[ (σ₂²·T₂ − σ₁²·T₁) / (T₂−T₁) ]</td><td>"Fair" implied vol for the forward period T₁→T₂. T in years (days/365).</td></tr>
+<tr><td>Forward Factor</td><td>FF = (σ₁ − ForwardIV) / ForwardIV</td><td>How much front-month IV exceeds fair value. FF &gt; 20% = actionable signal.</td></tr>
+</tbody></table></div>
+<div class="info-section"><div class="info-h">DTE Pair Buckets</div>
+<table class="info-tbl"><thead><tr><th>Bucket</th><th>Gap</th><th>Rationale</th></tr></thead><tbody>
+<tr><td><span class="wpill">20–30d</span></td><td>20–30 day gap</td><td>Primary — captures term structure slope with manageable vega</td></tr>
+<tr><td><span class="wpill-g">10–20d</span></td><td>10–20 day gap</td><td>Medium — faster theta, higher gamma sensitivity</td></tr>
+<tr><td><span class="wpill-p">7–10d</span></td><td>7–10 day gap</td><td>Near-term — aggressive theta capture, tight risk management required</td></tr>
+</tbody></table>
+<p class="info-p" style="margin-top:8px">DTE constraints: sell leg ≤ 60 DTE, buy leg ≤ 90 DTE, gap 7–30 days. Up to 3 best pairs per ticker shown (by FF%). Only ATM strikes used.</p></div>
+<div class="info-section"><div class="info-h">Payoff Diagram</div>
+<p class="info-p">P&L at the short expiry date. Back-month residual priced via full Black-Scholes using Forward IV for the remaining (dteL−dteS) days. Correctly shows losses in both wings: deep OTM → both calls worthless → P&L = −netDebit; deep ITM → both calls delta≈1, cancel out → P&L = −netDebit. Max loss = net debit paid.</p></div>`,
+  },
+  earnings: {
+    title: 'Earnings Options Scanner',
+    sub:   'Strategy 03 · Next 7 days earnings calendar · IV elevation + term structure signal',
+    body: `
+<div class="info-section"><div class="info-h">Strategy Overview</div>
+<p class="info-p">Scans companies reporting earnings in the next 7 days for elevated IV conditions that make short-volatility strategies attractive. Canonical trade: <strong>short straddle</strong> (sell ATM call + put) before earnings, targeting the IV crush after results. Calendar: yfinance → Nasdaq API → Yahoo scrape.</p></div>
+<div class="info-section"><div class="info-h">Three Signal Criteria</div>
+<table class="info-tbl"><thead><tr><th>Criterion</th><th>Threshold</th><th>How measured</th></tr></thead><tbody>
+<tr><td><span class="name">Avg Volume ✓</span></td><td>≥ 1,500,000 shares/day</td><td>30-day rolling average from 3-month OHLCV history</td></tr>
+<tr><td><span class="name">IV30/RV30 ✓</span></td><td>≥ 1.25</td><td>IV30 interpolated from term structure at 30 DTE. RV30 = Yang-Zhang estimator (robust to gaps and intraday moves).</td></tr>
+<tr><td><span class="name">TS Slope ✓</span></td><td>≤ −0.00406</td><td>slope = (IV_45d − IV_front) / (45 − DTE_front). Negative = front IV elevated vs further out.</td></tr>
+</tbody></table></div>
+<div class="info-section"><div class="info-h">Verdict Logic</div>
+<table class="vdict-tbl">
+<tr><td><span class="wpill-g">▲ Recommended</span></td><td>All three criteria pass.</td></tr>
+<tr><td><span class="wpill-y">◆ Consider</span></td><td>TS Slope passes AND exactly one of (Volume, IV30/RV30) passes.</td></tr>
+<tr><td><span class="wpill-r">▼ Avoid</span></td><td>TS Slope fails, or fewer than two criteria pass.</td></tr>
+</table></div>
+<div class="info-section"><div class="info-h">Yang-Zhang Estimator & Expected Move</div>
+<p class="info-p">RV30 uses Yang-Zhang (incorporates O/H/L/C) rather than close-to-close — more accurate around earnings when overnight gaps and intraday vol are elevated. Expected move = ATM straddle mid-price as % of spot = the market's implied 1σ move and the approximate short straddle breakeven.</p></div>`,
+  },
+  put_selling: {
+    title: 'Cash-Secured Put Writing',
+    sub:   'Strategy 04 · S&P 500 screened on FCF yield · Portfolio-weighted short puts',
+    body: `
+<div class="info-section"><div class="info-h">Strategy Overview</div>
+<p class="info-p">This is the only strategy in the suite that produces a <strong>book</strong> rather than a list of independent signals. It screens the S&P 500 on trailing free-cash-flow yield, sells one out-of-the-money put per surviving name, and then sizes those puts against each other so the collateral adds up to a defined capital base. Because sizing is relative, no row is final until every name has been priced &mdash; rows that arrive mid-scan render greyed with &ldquo;&hellip;&rdquo; in the portfolio columns.</p>
+<p class="info-p">The trade accepts assignment as a normal outcome, not a failure. Every leg is fully cash-collateralised at the strike, so a put that goes in the money simply converts to a long equity position at the breakeven price. The FCF screen exists precisely because that conversion has to be acceptable.</p></div>
+
+<div class="info-section"><div class="info-h">Pipeline</div>
+<table class="info-tbl"><thead><tr><th>Phase</th><th>What happens</th><th>Output</th></tr></thead><tbody>
+<tr><td><span class="name">1. Fundamentals</span></td><td>Trailing free cash flow &divide; market cap for every constituent. Names with missing or negative FCF are dropped, survivors are ranked into quintiles.</td><td><span class="wpill-c">fcf_yield</span> <span class="wpill-c">fcfy_quintile</span></td></tr>
+<tr><td><span class="name">2. Screen</span></td><td>Only the configured top quintile(s) advance. This is the quality gate &mdash; everything downstream assumes you would be content owning the shares.</td><td>Screened universe</td></tr>
+<tr><td><span class="name">3. Option pricing</span></td><td>For each survivor: pull the chain at the target expiry, pick the strike per the active mode, solve IV, compute Greeks and risk-neutral assignment probability.</td><td><span class="wpill-y">strike</span> <span class="wpill-y">iv</span> <span class="wpill-y">assign_prob</span></td></tr>
+<tr><td><span class="name">4. Weighting</span></td><td>Convert per-name risk into portfolio weights, then translate weights into whole contracts at a $100k book. Fractional allocations round down, so small weights can land on zero contracts.</td><td><span class="wpill-g">weight_pct</span> <span class="wpill-g">contracts_per_100k</span></td></tr>
+</tbody></table>
+<p class="info-p" style="margin-top:8px">The progress bar tracks phases 1&ndash;2 and then restarts for phase 3; the label next to it names the phase in flight. Phase 4 is instantaneous and arrives with the final payload.</p></div>
+
+<div class="info-section"><div class="info-h">Column Reference</div>
+<table class="info-tbl"><thead><tr><th>Column</th><th>Definition</th></tr></thead><tbody>
+<tr><td><span class="name">Weight</span></td><td>Share of the book's collateral assigned to this name by the active weighting scheme. Sums to ~100% across funded rows.</td></tr>
+<tr><td><span class="name">Contracts</span></td><td>Whole contracts to sell at a $100k book. <span class="desc">Zero means the weight was too small to fund one contract at this strike &mdash; a real constraint, not an error.</span></td></tr>
+<tr><td><span class="name">OTM %</span></td><td>Distance of the strike below spot. Wider is safer and pays less.</td></tr>
+<tr><td><span class="name">Prem / Prem %</span></td><td>Mid premium per share, and that premium as a percentage of strike collateral. Prem % is the period yield on the cash you must set aside.</td></tr>
+<tr><td><span class="name">|&Delta;|</span></td><td>Absolute delta of the short put &mdash; the conventional shorthand for assignment risk and the sizing input for delta-based modes.</td></tr>
+<tr><td><span class="name">Assign P</span></td><td>Risk-neutral probability the stock finishes below the strike. Systematically higher than |&Delta;| for OTM puts; it is a pricing measure, not a forecast.</td></tr>
+<tr><td><span class="name">FCF Y</span></td><td>Trailing free-cash-flow yield &mdash; the screen that decided the name was ownable in the first place.</td></tr>
+<tr><td><span class="name">Prem $</span></td><td>Dollar premium collected from this name at its portfolio weight.</td></tr>
+<tr><td><span class="name">&#9651;</span></td><td>The selected strike missed the mode's premium target. The name is kept and flagged rather than silently dropped.</td></tr>
+</tbody></table></div>
+
+<div class="info-section"><div class="info-h">Reading the Summary Tiles</div>
+<table class="info-tbl"><thead><tr><th>Tile</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><span class="name">Candidates / Funded</span></td><td>Names that survived the screen and were priced, versus those that actually receive contracts at a $100k book. A large gap means the book is too small for the chosen breadth.</td></tr>
+<tr><td><span class="name">Collateral /100k</span></td><td>Cash actually committed. Below $100k because contracts are whole numbers.</td></tr>
+<tr><td><span class="name">Premium /100k</span></td><td>Total premium collected across the book for this cycle.</td></tr>
+<tr><td><span class="name">Book Yield</span></td><td>Premium &divide; collateral for <em>this cycle only</em>. Deliberately not annualised: annualising assumes the cycle repeats at the same premium, which is exactly the assumption that fails when volatility collapses.</td></tr>
+</tbody></table>
+<p class="info-p" style="margin-top:8px">These figures come from the server's portfolio summary and are cached client-side, so sorting or filtering the table never changes the book totals.</p></div>
+
+<div class="info-section"><div class="info-h">What This Strategy Does Not Tell You</div>
+<p class="info-p">Assignment probability and premium yield are both derived from current option prices, so they inherit the market's assumptions rather than correcting them. A high book yield usually means elevated implied volatility, and elevated implied volatility usually means the market has a reason. Free-cash-flow yield is a backward-looking accounting measure and will not flag a business whose cash flows are about to deteriorate. The weighting scheme controls concentration, not correlation &mdash; a book of well-diversified names can still be a single macro bet in disguise.</p></div>`,
+  },
+};
+
+function showInfo(key) {
+  const c = INFO_CONTENT[key];
+  if (!c) return;
+  document.getElementById('infoTitle').textContent = c.title;
+  document.getElementById('infoSub').textContent   = c.sub;
+  document.getElementById('infoBody').innerHTML    = c.body;
+  document.getElementById('infoOverlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+/* Excluded tile \u2014 lists every ticker the vol/momentum screener dropped before
+   scoring, grouped by reason. Reuses the info modal so there is no new markup. */
+function _esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => (
+    { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]
+  ));
+}
+
+function showExcluded() {
+  const rows = Array.isArray(VM_EXCLUDED) ? VM_EXCLUDED : [];
+
+  let body;
+  if (!rows.length) {
+    body = VM_FILTERED_COUNT > 0
+      ? `<div class="info-sec"><p class="info-p">${VM_FILTERED_COUNT} ticker(s) were excluded, but no
+         per-ticker reasons were recorded. Reasons are captured from the live scan \u2014 re-run the
+         scanner to populate them.</p></div>`
+      : `<div class="info-sec"><p class="info-p">No tickers were excluded.</p></div>`;
+  } else {
+    // Group by reason, biggest bucket first.
+    const groups = new Map();
+    for (const r of rows) {
+      const key = r.reason || 'Filtered';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r.ticker || '\u2014');
+    }
+    const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+    body = sorted.map(([reason, tickers]) => `
+      <div class="info-sec">
+        <p class="info-p"><strong>${_esc(reason)}</strong> &middot; ${tickers.length} ticker(s)</p>
+        <p class="info-p" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--dim)">
+          ${tickers.map(_esc).join(', ')}
+        </p>
+      </div>`).join('');
+  }
+
+  document.getElementById('infoTitle').textContent = 'Excluded Tickers';
+  document.getElementById('infoSub').textContent   =
+    `Strategy 01 \u00b7 ${rows.length || VM_FILTERED_COUNT} ticker(s) dropped before scoring`;
+  document.getElementById('infoBody').innerHTML    = body;
+  document.getElementById('infoOverlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeInfoBtn() {
+  document.getElementById('infoOverlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+function closeInfo(e) {
+  if (e.target === document.getElementById('infoOverlay')) closeInfoBtn();
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeInfoBtn(); });
+
+</script>
+
+<!-- INFO MODAL -->
+<div class="info-overlay" id="infoOverlay" onclick="closeInfo(event)">
+  <div class="info-modal" id="infoModal">
+    <div class="info-modal-header">
+      <div><div class="ititle" id="infoTitle"></div><div class="isub" id="infoSub"></div></div>
+      <button class="info-close" onclick="closeInfoBtn()">✕ CLOSE</button>
+    </div>
+    <div class="info-body" id="infoBody"></div>
+  </div>
+</div>
+
+</body>
+</html>
