@@ -572,14 +572,6 @@ tr:hover td { background: rgba(0,200,232,0.03); }
     <div class="header-time" id="clock">--:--:--</div>
     <div class="header-spacer"></div>
     <span id="nextCycleLabel" style="font-size:10px;color:var(--dim);margin-right:10px;"></span>
-    <select id="intervalSelect" class="filter-btn" style="margin-right:6px;" title="Gap between scans">
-      <option value="60" selected>1m</option>
-      <option value="300">5m</option>
-      <option value="600">10m</option>
-      <option value="900">15m</option>
-      <option value="1800">30m</option>
-    </select>
-    <button id="btnContinuous" class="filter-btn" onclick="toggleContinuous()" style="margin-right:10px;">▶ Run 24/7</button>
     <span class="run-pill" id="runPill">◈ IDLE</span>
   </header>
 
@@ -1169,48 +1161,27 @@ async function startRun() {
    Unlike startRun(), this never clears STATE. The previous cycle's rows
    (and their timestamps) are left exactly as they are; only strategy_done
    events (see handleEvent below) replace them, and only once that
-   strategy's pass has fully finished. */
-function toggleContinuous() {
-  if (CONTINUOUS_ACTIVE) stopContinuousMode(); else startContinuousMode();
-}
+   strategy's pass has fully finished.
 
+   There is deliberately no UI to turn this on/off or change the interval —
+   the server decides that (CONTINUOUS_DEFAULT / CONTINUOUS_INTERVAL_SEC) and
+   starts looping on its own at boot. The dashboard only ever reflects that
+   state; startContinuousMode() below exists purely as a fallback for the
+   rare case the server came up without it (e.g. CONTINUOUS_DEFAULT=false on
+   that deployment), not as something a person triggers. */
 async function startContinuousMode() {
-  const interval = parseInt(document.getElementById('intervalSelect').value, 10) || 300;
   try {
-    const res  = await fetch(`/run/continuous?interval_sec=${interval}`, { method: 'POST' });
+    const res  = await fetch('/run/continuous', { method: 'POST' });
     const data = await res.json();
     if (!data.ok) {
       setGlobalDetail(`Could not start continuous mode: ${data.reason || 'unknown error'}`);
       return;
     }
     CONTINUOUS_ACTIVE = true;
-    updateContinuousButton();
     connectSSE();
   } catch(e) {
     setGlobalDetail(`POST /run/continuous failed: ${e.message}`);
   }
-}
-
-async function stopContinuousMode() {
-  try {
-    await fetch('/stop', { method: 'POST' });
-    setGlobalDetail('Stopping after the current cycle finishes…');
-    const btn = document.getElementById('btnContinuous');
-    if (btn) btn.disabled = true;
-  } catch(e) {
-    setGlobalDetail(`POST /stop failed: ${e.message}`);
-  }
-}
-
-function updateContinuousButton() {
-  const btn = document.getElementById('btnContinuous');
-  const sel = document.getElementById('intervalSelect');
-  if (btn) {
-    btn.disabled = false;
-    btn.textContent = CONTINUOUS_ACTIVE ? '■ Stop 24/7' : '▶ Run 24/7';
-    btn.classList.toggle('active', CONTINUOUS_ACTIVE);
-  }
-  if (sel) sel.disabled = CONTINUOUS_ACTIVE;
 }
 
 function startNextCycleCountdown(nextIso) {
@@ -1269,7 +1240,6 @@ function handleEvent(msg) {
     }
     if (payload.continuous) {
       CONTINUOUS_ACTIVE = true;
-      updateContinuousButton();
       if (payload.next_cycle_at) startNextCycleCountdown(payload.next_cycle_at);
     }
     if (payload.running) {
@@ -1444,7 +1414,6 @@ function handleEvent(msg) {
 
   if (kind === 'continuous_started') {
     CONTINUOUS_ACTIVE = true;
-    updateContinuousButton();
     return;
   }
 
@@ -1465,7 +1434,6 @@ function handleEvent(msg) {
 
   if (kind === 'continuous_stopped') {
     CONTINUOUS_ACTIVE = false;
-    updateContinuousButton();
     startNextCycleCountdown(null);
     setGlobalStatus('idle', 'Stopped', 'Continuous scanning stopped — results are from the last completed cycle');
     setPill('idle', '◈ IDLE');
@@ -2132,15 +2100,7 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     if (data.continuous) {
       CONTINUOUS_ACTIVE = true;
-      updateContinuousButton();
       if (data.next_cycle_at) startNextCycleCountdown(data.next_cycle_at);
-      // Reflect the server's actual interval (it may differ from the
-      // dropdown's default if CONTINUOUS_INTERVAL_SEC was overridden).
-      const sel = document.getElementById('intervalSelect');
-      if (sel && data.continuous_interval_sec) {
-        const has = [...sel.options].some(o => Number(o.value) === data.continuous_interval_sec);
-        if (has) sel.value = String(data.continuous_interval_sec);
-      }
     }
 
     if (data.running) {
