@@ -26,7 +26,7 @@ jobs:
           pip install pytest
 
       - name: Run tests
-        run: ./run_tests.sh
+        run: bash run_tests.sh
 
   build-and-deploy:
     needs: test          # only starts if the test job's conclusion is success
