@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: options-dashboard-deployment
+  labels:
+    app: options-dashboard
+spec:
+  replicas: 2 
+  selector:
+    matchLabels:
+      app: options-dashboard
+  template:
+    metadata:
+      labels:
+        app: options-dashboard
+    spec:
+      containers:
+      - name: options-dashboard
+        image: itayb5/options-scanner:latest 
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        env:
+        - name: ENVIRONMENT
+          value: "production"
