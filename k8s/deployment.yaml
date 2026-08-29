@@ -17,6 +17,7 @@ spec:
       containers:
       - name: options-dashboard
         image: itayb5/options-scanner:latest 
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         resources:
