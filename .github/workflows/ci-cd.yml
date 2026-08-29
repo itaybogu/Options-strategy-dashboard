@@ -8,6 +8,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Bridges tests/ importing app/'s modules directly (bare `import server`
+      # etc), and points test_calendar_live.js at dashboard.html — same two
+      # things run_tests.sh sets, just as job-level env so every step below
+      # inherits them without repeating.
+      PYTHONPATH: ${{ github.workspace }}/app
+      DASHBOARD_HTML: ${{ github.workspace }}/app/dashboard.html
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -25,8 +32,51 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
-      - name: Run tests
-        run: bash run_tests.sh
+      # Each test is its own step so it gets its own pass/fail icon in the
+      # Actions UI. `if: always()` (everywhere but the first) means a failure
+      # partway through does NOT skip the rest — every test still runs and
+      # reports, so one look at the job shows the full picture, not just the
+      # first thing that broke. The job's overall conclusion is still
+      # "failure" if any one of these fails, which is what build-and-deploy's
+      # `needs: test` checks — no extra logic required for that part.
+      - name: test_lifecycle.py
+        run: python3 tests/test_lifecycle.py
+
+      - name: test_market_cache.py
+        if: always()
+        run: python3 tests/test_market_cache.py
+
+      - name: test_cache_integration.py
+        if: always()
+        run: python3 tests/test_cache_integration.py
+
+      - name: test_cache_scope.py
+        if: always()
+        run: python3 tests/test_cache_scope.py
+
+      - name: test_fundamentals.py
+        if: always()
+        run: python3 tests/test_fundamentals.py
+
+      - name: test_provider.py
+        if: always()
+        run: python3 tests/test_provider.py
+
+      - name: test_upsert_state.py
+        if: always()
+        run: python3 tests/test_upsert_state.py
+
+      - name: test_server_put_selling.py
+        if: always()
+        run: python3 -m pytest tests/test_server_put_selling.py -q
+
+      - name: test_calendar_payoff.js
+        if: always()
+        run: node tests/test_calendar_payoff.js
+
+      - name: test_calendar_live.js
+        if: always()
+        run: node tests/test_calendar_live.js
 
   build-and-deploy:
     needs: test          # only starts if the test job's conclusion is success
