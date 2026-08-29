@@ -3,6 +3,7 @@
    _drawChart payload. This verifies the actual shipped display layer:
    adaptive window, dual curves, dash styling, legend text, meta strip. */
 const fs = require('fs');
+const path = require('path');
 
 // ── Minimal DOM stub: every element is a permissive sink ──────────────
 const el = new Proxy({}, {
@@ -35,7 +36,18 @@ global.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () =
 global.EventSource = function () { return { addEventListener: () => {}, close: () => {} }; };
 
 // ── Lift all inline <script> bodies ───────────────────────────────────
-const src = fs.readFileSync('/workspace/dashboard.html', 'utf8');
+// Resolved relative to this file (or DASHBOARD_HTML env override) so the
+// test works from any checkout location, not just one specific dev
+// container path. That was the bug: a hardcoded /workspace/dashboard.html
+// only ever passed by coincidence of where it happened to be run.
+const DASHBOARD_PATH = process.env.DASHBOARD_HTML
+  || path.join(__dirname, 'dashboard.html');
+if (!fs.existsSync(DASHBOARD_PATH)) {
+  console.error(`dashboard.html not found at ${DASHBOARD_PATH}`);
+  console.error('Set DASHBOARD_HTML=/path/to/dashboard.html or place it next to this test.');
+  process.exit(1);
+}
+const src = fs.readFileSync(DASHBOARD_PATH, 'utf8');
 let code = '';
 for (const m of src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) code += m[1] + '\n;\n';
 
