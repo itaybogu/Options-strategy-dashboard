@@ -34,7 +34,7 @@ class _App:
     def _deco(self, *a, **k):
         def wrap(fn): return fn
         return wrap
-    get = post = _deco
+    get = post = on_event = _deco
 
 
 _stub("uvicorn", run=lambda *a, **k: None)

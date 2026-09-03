@@ -99,14 +99,16 @@ PS_QUINTILE  = _env_bool("PS_QUINTILE", True)
 PS_MAX_NAMES = _env_int("PS_MAX_NAMES", 0)
 
 # ── Continuous-mode default ─────────────────────────────────────────────────
-# A scan takes long enough that requiring a manual "Run 24/7" click on every
-# boot is just friction, and worse, that click can race a page-load one-shot
-# run that's still mid-scan ("already running"). So the server now defaults
-# to looping on its own: CONTINUOUS_DEFAULT starts the loop automatically at
-# startup, CONTINUOUS_INTERVAL_SEC sets the gap *after* each cycle finishes
-# before the next one begins (never a fixed wall-clock schedule — see
-# _continuous_loop). Set CONTINUOUS_DEFAULT=false to fall back to the old
-# single-shot-on-load behavior.
+# The scanner should be running the moment the process comes up — not only
+# after someone happens to open the dashboard in a browser and its JS fires
+# a /run/continuous call. CONTINUOUS_DEFAULT starts the loop automatically;
+# CONTINUOUS_INTERVAL_SEC sets the gap *after* each cycle finishes before the
+# next one begins (never a fixed wall-clock schedule — see _continuous_loop).
+# This is wired up via a FastAPI startup event further down (not an
+# `if __name__ == "__main__":` guard), because this app is launched as
+# `uvicorn server:app` in production — that imports this file as a module,
+# so __name__ is "server", not "__main__", and a __main__-guarded block would
+# silently never run. Set CONTINUOUS_DEFAULT=false to disable.
 CONTINUOUS_DEFAULT      = _env_bool("CONTINUOUS_DEFAULT", True)
 CONTINUOUS_INTERVAL_SEC = max(30, _env_int("CONTINUOUS_INTERVAL_SEC", 60))
 
@@ -606,17 +608,13 @@ def _scan_pipeline() -> None:
         _prune_stale("put_selling")
         with _lock:
             _state["strategies"]["put_selling"]["summary"] = ps_summary
-            # Read back the rows _upsert_rows just stamped (as_of/cycle), not
-            # the original ps_results list: _upsert_rows stamps its own copies,
-            # so pushing from ps_results directly would ship timestamp-less
-            # rows on this fast path even though /results always has them.
-            stamped_results = list(_state["strategies"]["put_selling"]["results"])
 
         _update_strategy("put_selling", status="done")
         # Final payload carries the authoritative weighted rows. The dashboard
         # replaces any provisional rows with these.
         _push_event("strategy_done", "put_selling", {
-            "results": _sanitize(stamped_results),
+            "results": _sanitize([{k: v for k, v in r.items() if not k.startswith("_")}
+                                  for r in ps_results]),
             "summary": _sanitize(ps_summary),
             "count":   len(ps_results),
         })
@@ -793,6 +791,31 @@ app.add_middleware(
 DASHBOARD_PATH = Path(__file__).parent / "dashboard.html"
 
 
+@app.on_event("startup")
+async def _auto_start_continuous() -> None:
+    """
+    Start the continuous scan loop the moment the app comes up — not only
+    once someone opens the dashboard in a browser.
+
+    This used to live in `if __name__ == "__main__":`, which only runs when
+    this file is executed directly (`python server.py`). In production this
+    app is launched as `uvicorn server:app ...` (see the Dockerfile), which
+    *imports* this module instead of running it as a script — so __name__ is
+    "server", not "__main__", and that block silently never ran. A FastAPI
+    startup event fires on every launch path (direct script, uvicorn CLI,
+    gunicorn+uvicorn workers), so this is the one place that's guaranteed to
+    run regardless of how the container starts the process.
+    """
+    if not CONTINUOUS_DEFAULT:
+        print("[server] Continuous scanning: OFF (CONTINUOUS_DEFAULT=false) — "
+              "single-shot only until /run/continuous is called")
+        return
+    print(f"[server] Continuous scanning: ON — next cycle starts "
+          f"{CONTINUOUS_INTERVAL_SEC}s after each one finishes "
+          f"(CONTINUOUS_INTERVAL_SEC / CONTINUOUS_DEFAULT=false to change)")
+    _start_continuous(CONTINUOUS_INTERVAL_SEC)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard():
     if DASHBOARD_PATH.exists():
@@ -822,9 +845,10 @@ def _start_continuous(interval_sec: int) -> dict:
     """
     Launch the continuous loop thread, or report why it can't start.
 
-    Shared by POST /run/continuous and the startup auto-start below, so both
-    paths get the same guard against double-starting (already continuous) and
-    against racing a one-shot scan that's mid-flight (already running).
+    Shared by POST /run/continuous and the startup-event auto-start below, so
+    both paths get the same guard against double-starting (already
+    continuous) and against racing a one-shot scan that's mid-flight
+    (already running).
     """
     interval_sec = max(30, int(interval_sec))
 
@@ -1048,20 +1072,7 @@ if __name__ == "__main__":
     print("  Open http://localhost:8000 in your browser")
     print(f"  Data provider: {DATA_PROVIDER}"
           + (f"  (TWS {IBKR_HOST}:{IBKR_PORT})" if DATA_PROVIDER == "ibkr" else ""))
-    if CONTINUOUS_DEFAULT:
-        print(f"  Continuous scanning: ON — next cycle starts "
-              f"{CONTINUOUS_INTERVAL_SEC}s after each one finishes "
-              f"(CONTINUOUS_INTERVAL_SEC / CONTINUOUS_DEFAULT=false to change)")
-    else:
-        print("  Continuous scanning: OFF (CONTINUOUS_DEFAULT=false) — "
-              "single-shot only until /run/continuous is called")
     print("═" * 60 + "\n")
-    if CONTINUOUS_DEFAULT:
-        # Started here rather than left to the dashboard's first page load:
-        # the loop should be scanning the moment the process comes up, whether
-        # or not anyone has a browser open yet, and it must not depend on a
-        # client hitting a button that can race an in-flight one-shot run.
-        _start_continuous(CONTINUOUS_INTERVAL_SEC)
     try:
         uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
     finally:
