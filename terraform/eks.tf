@@ -20,14 +20,6 @@ module "eks" {
       type                          = "ingress"
       source_cluster_security_group = true
     }
-    ingress_metrics_server_4443 = {
-      description                   = "Cluster API to node for metrics server standard port"
-      protocol                      = "tcp"
-      from_port                     = 4443
-      to_port                       = 4443
-      type                          = "ingress"
-      source_cluster_security_group = true
-    }
   }
 
   cluster_addons = {
