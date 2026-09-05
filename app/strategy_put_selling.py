@@ -749,18 +749,44 @@ def run(
                                           sleep=FCF_FETCH_DELAY)
     fundamentals.rank_by_fcf_yield(fcf_all, quantiles=5)
 
+    # A cycle where phase 1 comes back mostly/all-failed produces the exact
+    # same downstream symptom as a cycle where FCF genuinely disqualified
+    # everyone: zero eligible names, no exception, nothing for
+    # _strategy_failed to catch. Print a breakdown so that distinction is
+    # visible in server logs instead of having to guess again.
+    n_total  = len(fcf_all)
+    n_sane   = sum(1 for r in fcf_all.values() if r.get("sane"))
+    n_failed = n_total - n_sane
+    if n_failed:
+        reasons: dict[str, int] = {}
+        for r in fcf_all.values():
+            if not r.get("sane"):
+                reason = r.get("reason") or "unknown"
+                key = ("rate limited" if "Too Many Requests" in reason
+                                       or "429" in reason
+                       else reason[:60])
+                reasons[key] = reasons.get(key, 0) + 1
+        breakdown = ", ".join(f"{v}x {k!r}" for k, v in
+                               sorted(reasons.items(), key=lambda kv: -kv[1]))
+        print(f"[put_selling] phase 1: {n_sane}/{n_total} FCF fetches OK, "
+              f"{n_failed} failed -- {breakdown}")
+
     # Screen. Both paper variants require positive FCF yield; a company burning
     # cash fails the premise of the strike rule (there is no cash flow to compare
     # premium against), so it is excluded rather than ranked last.
+    n_fetched_ok = n_no_yield = n_negative_yield = n_quintile_cut = 0
     eligible = []
     for sym in universe:
         rec = fcf_all.get(sym.upper()) or {}
         y   = rec.get("fcf_yield")
         if y is None or not rec.get("sane"):
             continue
+        n_fetched_ok += 1
         if mode == "fcf_premium" and y <= 0:
+            n_negative_yield += 1
             continue
         if use_quintile and rec.get("fcfy_quintile") not in (1,):
+            n_quintile_cut += 1
             continue
         eligible.append(sym)
 
@@ -769,6 +795,7 @@ def run(
     # an aborted scan still yields the names that mattered.
     eligible.sort(key=lambda s: fcf_all.get(s.upper(), {}).get("fcf_yield") or -9,
                   reverse=True)
+    n_before_cap = len(eligible)
     if max_names:
         eligible = eligible[:max_names]
 
@@ -779,23 +806,36 @@ def run(
           "_progress": {"current": total_u, "total": total_u}})
 
     if not eligible:
-        log.warning("put_selling: no names passed the FCF screen")
+        # Same reasoning as the phase-1 breakdown above: "0 eligible" looks
+        # identical on screen whether the cause was rate limiting upstream,
+        # every fetched name failing the yield/quintile cut, or the max_names
+        # cap zeroing things out. print(), not log.warning() -- see note
+        # above about uvicorn silently dropping pre-existing app loggers.
+        print(f"[put_selling] phase 1: 0 eligible names -- of {total_u} "
+              f"universe: {n_fetched_ok} fetched OK, {n_negative_yield} "
+              f"non-positive yield, {n_quintile_cut} cut by quintile filter, "
+              f"{n_before_cap} passed screen before max_names cap "
+              f"(max_names={max_names or 'unlimited'})")
         return []
 
     # ── PHASE 2: option chains ───────────────────────────────────────────────
     results: list[dict] = []
     total_e = len(eligible)
 
+    n_analyze_none = n_analyze_error = 0
     for i, sym in enumerate(eligible, 1):
         rec = fcf_all.get(sym.upper()) or {}
         try:
             cand = analyze_ticker(sym, rec, mode=mode)
         except Exception as e:
             log.debug(f"{sym}: unexpected analyze error: {e}")
+            n_analyze_error += 1
             cand = None
 
         if cand:
             results.append(cand)
+        else:
+            n_analyze_none += 1
 
         emit({"phase": "options", "ticker": sym, "found": 1 if cand else 0,
               "candidate": cand, "fcf_yield": rec.get("fcf_yield"),
@@ -813,6 +853,8 @@ def run(
                                 r.get("ann_yield_if_repeated") or 0),
                  reverse=True)
 
-    log.info(f"put_selling: {len(results)} candidates from {total_e} screened "
-             f"({mode}, {weighting}-weighted)")
+    print(f"[put_selling] phase 2: {len(results)} candidates from {total_e} "
+          f"screened ({mode}, {weighting}-weighted); {n_analyze_none} had no "
+          f"viable strike/chain, {n_analyze_error} raised an exception "
+          f"(see debug log for exceptions if any)")
     return results
