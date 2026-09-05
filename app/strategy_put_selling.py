@@ -122,7 +122,8 @@ TARGET_MONEYNESS   = _env_float("PS_TARGET_MONEYNESS", 0.10)
 TOP_QUINTILE_ONLY  = os.environ.get("PS_TOP_QUINTILE", "1") not in ("0", "false", "False")
 CONTRACT_SIZE      = 100
 
-FETCH_DELAY        = _env_float("PS_FETCH_DELAY", 0.15)
+FETCH_DELAY        = _env_float("PS_FETCH_DELAY", 0.15)     # phase 2: ~1 request/ticker
+FCF_FETCH_DELAY    = _env_float("PS_FCF_FETCH_DELAY", 0.5)  # phase 1: up to 3 requests/ticker
 PRICING_MODEL      = os.environ.get("PS_MODEL", "crr")
 
 # Hard cap on how many names enter PHASE 1, applied BEFORE any fundamentals are
@@ -736,7 +737,16 @@ def run(
               "fcf_yield": ev.get("fcf_yield"), "found": 0,
               "_progress": ev.get("_progress", {})})
 
-    fcf_all = fundamentals.get_fcf_yields(universe, on_progress=fund_progress)
+    # get_fcf_yields defaults to sleep=0.0 -- fine for a handful of tickers,
+    # but phase 1 can be the whole S&P 500 and each ticker can cost up to 3
+    # separate requests (info, quarterly cashflow, annual cashflow fallback).
+    # Unthrottled, that's a burst of up to ~1500 requests with zero pacing --
+    # exactly what was triggering "Too Many Requests" from Yahoo in
+    # production, which then bled into whatever ran next since the rate
+    # limit doesn't clear instantly. FCF_FETCH_DELAY is more conservative
+    # than phase 2's FETCH_DELAY below, since each ticker here costs more.
+    fcf_all = fundamentals.get_fcf_yields(universe, on_progress=fund_progress,
+                                          sleep=FCF_FETCH_DELAY)
     fundamentals.rank_by_fcf_yield(fcf_all, quantiles=5)
 
     # Screen. Both paper variants require positive FCF yield; a company burning

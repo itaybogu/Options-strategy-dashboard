@@ -56,7 +56,7 @@ def test_callback_handles_real_event_stream(monkeypatch):
 
     universe = ["AAA", "BBB", "CCC", "DDD"]
 
-    def fake_fcf(tickers, on_progress=None):
+    def fake_fcf(tickers, on_progress=None, **kw):
         # `sane` and `fcfy_quintile` are part of the real fundamentals contract:
         # the screen drops any record without sane=True, and rank_by_fcf_yield()
         # is what normally assigns the quintile. Omitting them silently empties
