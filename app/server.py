@@ -18,6 +18,7 @@ import json
 import threading
 import time
 import datetime
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -377,6 +378,15 @@ def _strategy_failed(key: str, exc: BaseException) -> None:
     every later POST /run replied "already running" until the process was
     restarted. Callers now catch BaseException and route here.
 
+    This also prints a full traceback to the server console. Previously this
+    function only updated internal state and fired a terse SSE event — a
+    strategy that failed on every cycle looked, from the dashboard, exactly
+    like one that simply never returned any candidates. In continuous mode
+    that distinction matters a lot more than it used to: a strategy that
+    fetches for hundreds of tickers every cycle, forever, is far more likely
+    to eventually hit a rate limit than the same code run manually once in a
+    while, and without this there was no way to see that from `kubectl logs`.
+
     KeyboardInterrupt is re-raised so a real Ctrl-C still stops the process;
     everything else (including SystemExit) is downgraded to a per-strategy
     error so the remaining strategies still get their turn.
@@ -385,6 +395,8 @@ def _strategy_failed(key: str, exc: BaseException) -> None:
     detail = str(exc) or type(exc).__name__
     if isinstance(exc, SystemExit):
         detail = f"strategy aborted (sys.exit({exc.code})) — see server log"
+    print(f"[scanner] {key} failed: {type(exc).__name__}: {exc}")
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
     _push_event("strategy_error", key, {"error": detail})
     if isinstance(exc, KeyboardInterrupt):
         raise exc
