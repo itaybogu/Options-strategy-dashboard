@@ -16,7 +16,8 @@ spec:
     spec:
       containers:
       - name: options-dashboard
-        image: itayb5/options-scanner:latest 
+        # Change this to deploy your own image (see README).
+        image: itayb5/options-scanner:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
