@@ -4,3 +4,4 @@ venv/
 .env
 .terraform/
 *.tfstate*
+app/data/
