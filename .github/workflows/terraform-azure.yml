@@ -24,19 +24,20 @@ on:
 
 jobs:
   terraform:
-    # Secret Guard + Global Target Cloud Flag
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target_cloud == 'aws') || (github.event_name != 'workflow_dispatch' && vars.TARGET_CLOUD == 'aws') }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target_cloud == 'azure') || (github.event_name != 'workflow_dispatch' && vars.TARGET_CLOUD == 'azure') }}
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     
     defaults:
       run:
         working-directory: ./terraform/azure
 
     env:
-      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
-      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
 
     steps:
       - name: Checkout Code
