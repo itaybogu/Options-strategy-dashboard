@@ -8,9 +8,6 @@ on:
       - 'app/**'        
       - 'Dockerfile'
       - 'requirements.txt'
-    paths-ignore:
-      - 'README.md'
-      - '*.tf'
   workflow_dispatch:
     inputs:
       target_cloud:
