@@ -24,7 +24,6 @@ on:
 
 jobs:
   terraform:
-    # Secret Guard + Global Target Cloud Flag
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target_cloud == 'aws') || (github.event_name != 'workflow_dispatch' && vars.TARGET_CLOUD == 'aws') }}
     runs-on: ubuntu-latest
     
