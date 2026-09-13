@@ -19,7 +19,7 @@ import yfinance as yf          # retained: fallback path inside data_provider
 import pandas as pd
 
 import data_provider
-from option_pricing import atm_iv_from_chain, get_risk_free_rate, get_dividend_yield
+from option_pricing import atm_iv_from_chain, get_risk_free_rate, get_dividend_yield, _euro_call
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +90,15 @@ VOL_LOOKBACK_DAYS = 30
 
 MIN_FF    = 0.20
 TOP_PAIRS = 3
+
+# Model vs. Market Divergence Filter: a calendar spread whose quoted net
+# debit sits far above what Black-Scholes says it should cost is usually a
+# bad/stale quote or an illiquid market, not a real edge -- exclude it rather
+# than surface a trade that looks attractive on FF% but is actually just
+# mispriced. 0.30 = net debit may not exceed model debit by more than 30%.
+# Pairs with no live quotes fall back to the model price for both sides
+# (edge = 0), so this only ever filters quoted markets, never theoretical ones.
+MAX_DEBIT_EDGE = 0.30
 
 # DTE rules (from strategy spec):
 #   - Long leg (back month): max 90 DTE
@@ -410,6 +419,12 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
 
         chain_cache: dict[date, pd.DataFrame] = {}
 
+        # For the model-debit comparison below. get_atm_iv() already computes
+        # these internally per IV solve; fetched once more here since they're
+        # not threaded through to the per-pair loop.
+        r = get_risk_free_rate()
+        q = get_dividend_yield(ticker, spot)
+
         def fetch_calls(exp: date) -> Optional[pd.DataFrame]:
             if exp in chain_cache:
                 return chain_cache[exp]
@@ -447,6 +462,10 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
             if ff < MIN_FF:
                 continue
 
+            # Fetch bid/ask for each leg at the ATM strike
+            quote_short = _get_atm_row(calls1, spot)
+            quote_long  = _get_atm_row(calls2, spot)
+
             def atm_strike(chain, spot):
                 if chain is None or chain.empty:
                     return None
@@ -454,9 +473,35 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
                 c["d"] = (c["strike"] - spot).abs()
                 return float(c.sort_values("d").iloc[0]["strike"])
 
-            # Fetch bid/ask for each leg at the ATM strike
-            quote_short = _get_atm_row(calls1, spot)
-            quote_long  = _get_atm_row(calls2, spot)
+            strike_short = atm_strike(calls1, spot)
+            strike_long  = atm_strike(calls2, spot)
+
+            # Model vs. Market Divergence Filter. Same debit-anchoring
+            # priority as the dashboard's payoff modal (_payoffCal in
+            # dashboard.html): prefer the natural market (buy ask / sell
+            # bid), fall back to mid, fall back to the model price itself
+            # when there's no quote to compare against at all.
+            model_debit = None
+            if strike_short and strike_long:
+                model_debit = (
+                    _euro_call(spot, strike_long,  t2, r, q, iv2) -
+                    _euro_call(spot, strike_short, t1, r, q, iv1)
+                )
+
+            net_debit = None
+            if quote_long and quote_short:
+                nat = quote_long["ask"] - quote_short["bid"]
+                mid = quote_long["mid"] - quote_short["mid"]
+                if nat is not None and nat > 0:
+                    net_debit = nat
+                elif mid is not None and mid > 0:
+                    net_debit = mid
+
+            if (model_debit is not None and model_debit > 0
+                    and net_debit is not None):
+                debit_edge = (net_debit - model_debit) / model_debit
+                if debit_edge > MAX_DEBIT_EDGE:
+                    continue
 
             results.append({
                 "ticker":       ticker,
@@ -471,8 +516,8 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
                 "iv_long":      round(iv2 * 100, 2),
                 "forward_iv":   round(fwd_iv * 100, 2),
                 "ff":           round(ff * 100, 2),
-                "strike_short": atm_strike(calls1, spot),
-                "strike_long":  atm_strike(calls2, spot),
+                "strike_short": strike_short,
+                "strike_long":  strike_long,
                 "short_bid":    quote_short["bid"] if quote_short else None,
                 "short_ask":    quote_short["ask"] if quote_short else None,
                 "short_mid":    quote_short["mid"] if quote_short else None,
