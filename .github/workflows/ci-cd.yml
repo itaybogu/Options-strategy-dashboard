@@ -4,6 +4,23 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'app/**'        
+      - 'Dockerfile'
+      - 'requirements.txt'
+    paths-ignore:
+      - 'README.md'
+      - '*.tf'
+  workflow_dispatch:
+    inputs:
+      target_cloud:
+        description: 'Target Cloud (azure or aws)'
+        required: true
+        default: 'azure'
+        type: choice
+        options:
+          - azure
+          - aws          
 
 jobs:
   test:
@@ -28,7 +45,6 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
-      # if: always() so one failing test doesn't skip the rest
       - name: test_lifecycle.py
         run: python3 tests/test_lifecycle.py
 
@@ -68,10 +84,9 @@ jobs:
         if: always()
         run: node tests/test_calendar_live.js
 
-  build-and-deploy:
+  build-and-push:
     needs: test
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -89,6 +104,32 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/options-scanner:latest
 
+  deploy-azure:
+    needs: build-and-push
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target_cloud == 'azure') || (github.event_name != 'workflow_dispatch' && vars.TARGET_CLOUD == 'azure') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS Context
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: 'rg-options-scanner'
+          cluster-name: 'aks-options-scanner'
+
+      - name: Deploy to AKS
+        run: |
+          kubectl set image deployment/options-dashboard-deployment options-dashboard=${{ secrets.DOCKER_USERNAME }}/options-scanner:latest
+          kubectl rollout restart deployment options-dashboard-deployment
+
+  deploy-aws:
+    needs: build-and-push
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.target_cloud == 'aws') || (github.event_name != 'workflow_dispatch' && vars.TARGET_CLOUD == 'aws') }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -98,12 +139,6 @@ jobs:
 
       - name: Deploy to EKS
         run: |
-          # Switch context to the EKS cluster
           aws eks update-kubeconfig --region us-east-1 --name options-scanner-cluster
-
-          # Set image to the newly built one
-          kubectl set image deployment/options-dashboard-deployment \
-            options-dashboard=${{ secrets.DOCKER_USERNAME }}/options-scanner:latest
-
-          # Redeploy 
+          kubectl set image deployment/options-dashboard-deployment options-dashboard=${{ secrets.DOCKER_USERNAME }}/options-scanner:latest
           kubectl rollout restart deployment options-dashboard-deployment

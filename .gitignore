@@ -1,7 +1,10 @@
 __pycache__/
+*.pyc
+.pytest_cache/
 .venv/
 venv/
 .env
+app/data/
 .terraform/
 *.tfstate*
-app/data/
+node_modules/

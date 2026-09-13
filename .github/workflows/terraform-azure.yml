@@ -1,0 +1,61 @@
+name: Terraform Azure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/azure/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'terraform/azure/**'
+  workflow_dispatch:
+    inputs:
+      target_cloud:
+        description: 'Target Cloud (azure or aws)'
+        required: true
+        default: 'azure'
+        type: choice
+        options:
+          - azure
+          - aws
+
+jobs:
+  terraform:
+    # Secret Guard + Global Target Cloud Flag
+    if: ${{ ( (github.event_name == 'workflow_dispatch' && inputs.target_cloud == 'azure') || (github.event_name != 'workflow_dispatch' && vars.TARGET_CLOUD == 'azure') ) && secrets.ARM_CLIENT_ID != '' && secrets.ARM_CLIENT_SECRET != '' }}
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./terraform/azure
+
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve tfplan
