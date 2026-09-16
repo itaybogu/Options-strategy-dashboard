@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "options-dashboard-chart.fullname" . }}-dashboard-service
+  labels:
+  {{- include "options-dashboard-chart.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.dashboardService.type }}
+  selector:
+    app: options-dashboard
+    {{- include "options-dashboard-chart.selectorLabels" . | nindent 4 }}
+  ports:
+  {{- .Values.dashboardService.ports | toYaml | nindent 2 }}

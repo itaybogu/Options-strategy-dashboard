@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "options-dashboard-chart.fullname" . }}-dashboard-deployment
+  labels:
+    app: options-dashboard
+  {{- include "options-dashboard-chart.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.dashboardDeployment.replicas }}
+  selector:
+    matchLabels:
+      app: options-dashboard
+    {{- include "options-dashboard-chart.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: options-dashboard
+      {{- include "options-dashboard-chart.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - env:
+        - name: ENVIRONMENT
+          value: {{ quote .Values.dashboardDeployment.optionsDashboard.env.environment
+            }}
+        - name: KUBERNETES_CLUSTER_DOMAIN
+          value: {{ quote .Values.kubernetesClusterDomain }}
+        image: {{ .Values.dashboardDeployment.optionsDashboard.image.repository }}:{{ .Values.dashboardDeployment.optionsDashboard.image.tag
+          | default .Chart.AppVersion }}
+        imagePullPolicy: {{ .Values.dashboardDeployment.optionsDashboard.imagePullPolicy
+          }}
+        name: options-dashboard
+        ports:
+        - containerPort: 8000
+        resources: {{- toYaml .Values.dashboardDeployment.optionsDashboard.resources |
+          nindent 10 }}
