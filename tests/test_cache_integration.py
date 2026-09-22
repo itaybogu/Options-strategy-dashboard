@@ -20,6 +20,8 @@ from __future__ import annotations
 import sys
 import types
 
+import pandas as pd
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Stub out third-party deps BEFORE importing project modules
@@ -42,10 +44,16 @@ class _StubYFTicker:
         self.symbol = symbol
 
     def history(self, period="1mo", interval="1d", auto_adjust=True, **kw):
-        return f"hist:{self.symbol}:{period}"
+        idx = pd.date_range("2024-01-02", periods=3, freq="B")
+        val = float(sum(ord(c) for c in self.symbol) + len(period))
+        return pd.DataFrame({"Close": [val, val + 1, val + 2]}, index=idx)
 
 
 def _stub_download(tickers, **kw):
+    # No longer called by data_provider.download() itself (it fetches via
+    # .history() per ticker now, not yf.download() -- see its docstring),
+    # but kept stubbed in case anything else calls yfinance.download()
+    # directly.
     yf_calls["download"] += 1
     n = len(tickers) if isinstance(tickers, (list, tuple, set)) else 1
     return f"batch:{n}:{kw.get('period')}"
@@ -92,7 +100,7 @@ def test_get_ticker_wrapped() -> None:
 
     h1 = tk.history(period="1y")
     h2 = tk.history(period="1y")
-    check("history value correct", h1 == h2 == "hist:AAPL:1y", str(h1))
+    check("history value correct", h1.equals(h2), f"{h1}\nvs\n{h2}")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -112,7 +120,7 @@ def test_cross_call_sharing() -> None:
     a = tk_a.history(period="1y")
     b = tk_b.history(period="1y")
 
-    check("both callers got same data", a == b == "hist:AAPL:1y")
+    check("both callers got same data", a.equals(b))
     check("underlying yf.Ticker built only once", yf_calls["ticker"] == 1,
           f"built {yf_calls['ticker']}x")
 
@@ -129,32 +137,32 @@ def test_cross_call_sharing() -> None:
 def test_download_dedup() -> None:
     section("3. data_provider.download dedupes identical batch requests")
     market_cache.clear()
-    yf_calls["download"] = 0
+    yf_calls["ticker"] = 0
 
-    universe = ["AAPL", "MSFT", "NVDA", "AMZN"]
+    universe = ["AAPL", "MSFT", "NVDA", "AMZN"]  # 4 symbols
 
     r1 = data_provider.download(universe, period="1mo", interval="1d")
     r2 = data_provider.download(universe, period="1mo", interval="1d")
 
-    check("identical batch -> 1 upstream download", yf_calls["download"] == 1,
-          f"called {yf_calls['download']}x")
-    check("both callers got same result", r1 == r2, f"{r1} vs {r2}")
+    check("identical batch -> 1 upstream fetch (4 tickers)",
+          yf_calls["ticker"] == 4, f"called {yf_calls['ticker']}x")
+    check("both callers got same result", r1.equals(r2))
 
     # Same symbols in a different order is the same request.
     data_provider.download(["MSFT", "AAPL", "NVDA", "AMZN"],
                            period="1mo", interval="1d")
-    check("symbol order does not defeat the cache", yf_calls["download"] == 1,
-          f"called {yf_calls['download']}x")
+    check("symbol order does not defeat the cache", yf_calls["ticker"] == 4,
+          f"called {yf_calls['ticker']}x")
 
-    # A different period is genuinely a different request.
+    # A different period is genuinely a different request -- 4 more tickers.
     data_provider.download(universe, period="1y", interval="1d")
-    check("different period -> new download", yf_calls["download"] == 2,
-          f"called {yf_calls['download']}x")
+    check("different period -> new fetch (+4)", yf_calls["ticker"] == 8,
+          f"called {yf_calls['ticker']}x")
 
-    # A different universe is genuinely a different request.
+    # A different universe is genuinely a different request -- 5 tickers.
     data_provider.download(universe + ["TSLA"], period="1mo", interval="1d")
-    check("different universe -> new download", yf_calls["download"] == 3,
-          f"called {yf_calls['download']}x")
+    check("different universe -> new fetch (+5)", yf_calls["ticker"] == 13,
+          f"called {yf_calls['ticker']}x")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -246,10 +254,11 @@ def test_kill_switch() -> None:
         check("get_ticker returns raw ticker when disabled",
               not isinstance(tk, market_cache.CachedTicker), type(tk).__name__)
 
+        yf_calls["ticker"] = 0  # isolate from the get_ticker() call just above
         data_provider.download(["AAPL", "MSFT"], period="1mo")
         data_provider.download(["AAPL", "MSFT"], period="1mo")
-        check("download not deduped when disabled", yf_calls["download"] == 2,
-              f"called {yf_calls['download']}x")
+        check("download not deduped when disabled", yf_calls["ticker"] == 4,
+              f"called {yf_calls['ticker']}x")
     finally:
         market_cache.ENABLED = original
 

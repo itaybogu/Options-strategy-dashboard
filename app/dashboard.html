@@ -749,6 +749,11 @@ tr:hover td { background: rgba(0,200,232,0.03); }
             <div class="toggle-track"><div class="toggle-thumb"></div></div>
             Spread ≤30%
           </label>
+          <label class="earn-toggle" title="Hide pairs where net debit exceeds Black-Scholes model debit by more than 30%">
+            <input type="checkbox" id="cal-debit-filter" checked onchange="renderCal()">
+            <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            Debit edge ≤30%
+          </label>
           <label class="earn-toggle" title="Hide pairs where earnings fall before the long leg expires">
             <input type="checkbox" id="cal-earn-filter" checked onchange="renderCal()">
             <div class="toggle-track"><div class="toggle-thumb"></div></div>
@@ -1708,6 +1713,7 @@ function renderCal() {
   const calEarnOn   = document.getElementById('cal-earn-filter')?.checked   ?? true;
   const calVolOn    = document.getElementById('cal-vol-filter')?.checked    ?? true;
   const calSpreadOn = document.getElementById('cal-spread-filter')?.checked ?? true;
+  const calDebitOn  = document.getElementById('cal-debit-filter')?.checked  ?? true;
   let rows = results.filter(r => {
     if (calFilter !== 'all' && r.bucket !== calFilter) return false;
     if (q && !r.ticker?.toUpperCase().includes(q)) return false;
@@ -1717,6 +1723,10 @@ function renderCal() {
     if (calVolOn    && r.avg_vol_30d    != null && r.avg_vol_30d < 1.5) return false;
     // Spread filter: hide pairs where max leg spread > 30%
     if (calSpreadOn && r.leg_spread_max != null && r.leg_spread_max > 0.30) return false;
+    // Model vs. market divergence: hide pairs where net debit exceeds
+    // model debit by more than 30% (see strategy_calendar.py's
+    // MAX_DEBIT_EDGE for the matching server-side formula/comment).
+    if (calDebitOn  && r.debit_edge     != null && r.debit_edge > 0.30) return false;
     return true;
   });
 

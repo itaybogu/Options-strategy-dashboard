@@ -93,11 +93,23 @@ TOP_PAIRS = 3
 
 # Model vs. Market Divergence Filter: a calendar spread whose quoted net
 # debit sits far above what Black-Scholes says it should cost is usually a
-# bad/stale quote or an illiquid market, not a real edge -- exclude it rather
-# than surface a trade that looks attractive on FF% but is actually just
-# mispriced. 0.30 = net debit may not exceed model debit by more than 30%.
-# Pairs with no live quotes fall back to the model price for both sides
-# (edge = 0), so this only ever filters quoted markets, never theoretical ones.
+# bad/stale quote or an illiquid market, not a real edge. This is a SOFT
+# filter: every row always gets a debit_edge field attached (never excluded
+# server-side); the dashboard's own "Debit edge <=30%" toggle (default on)
+# is what actually hides rows above the threshold, so it's the user's call
+# to turn it off and see everything. 0.30 = net debit may not exceed model
+# debit by more than 30%. Pairs with no live quotes fall back to the model
+# price for both sides (edge = 0).
+#
+# Deliberately uses r=0, q=0, and ONE shared strike for both legs (whichever
+# of strike_short/strike_long dashboard.html's payoff chart uses -- see
+# _payoffCal()/bsCall() there) rather than a more theoretically complete
+# price (real rate, dividend yield, per-leg strikes). Pricing this more
+# "correctly" would let it disagree with what a user sees when they open the
+# payoff chart for that exact same row -- exactly the inconsistency this
+# filter exists to avoid, not the accuracy this app's other pricing already
+# gets right elsewhere (e.g. option_pricing.py's own _euro_call, used for
+# more rigorous work than a same-page consistency check).
 MAX_DEBIT_EDGE = 0.30
 
 # DTE rules (from strategy spec):
@@ -226,6 +238,12 @@ def filter_by_volume(tickers: list[str]) -> tuple[list[str], dict]:
     value can be stored per-ticker and used by the frontend toggle.
     """
     try:
+        # threads=True is safe here: data_provider.download() no longer
+        # calls yf.download() itself (see its docstring) -- it fetches each
+        # ticker individually via a plain ThreadPoolExecutor, so this never
+        # touches yfinance's own internal batch-threading, which is
+        # specifically where the confirmed memory leak (ranaroussi/
+        # yfinance#992) lives.
         raw = data_provider.download(
             tickers, period=f"{VOL_LOOKBACK_DAYS}d",
             auto_adjust=True, progress=False, threads=True,
@@ -419,12 +437,6 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
 
         chain_cache: dict[date, pd.DataFrame] = {}
 
-        # For the model-debit comparison below. get_atm_iv() already computes
-        # these internally per IV solve; fetched once more here since they're
-        # not threaded through to the per-pair loop.
-        r = get_risk_free_rate()
-        q = get_dividend_yield(ticker, spot)
-
         def fetch_calls(exp: date) -> Optional[pd.DataFrame]:
             if exp in chain_cache:
                 return chain_cache[exp]
@@ -480,28 +492,33 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
             # priority as the dashboard's payoff modal (_payoffCal in
             # dashboard.html): prefer the natural market (buy ask / sell
             # bid), fall back to mid, fall back to the model price itself
-            # when there's no quote to compare against at all.
+            # when there's no quote to compare against at all. r=0, q=0, one
+            # shared strike -- matching the chart's own bsCall(), not this
+            # module's more complete _euro_call(spot, K, T, r, q, sigma) used
+            # elsewhere -- see the comment on MAX_DEBIT_EDGE above for why.
+            shared_strike = strike_short or strike_long
             model_debit = None
-            if strike_short and strike_long:
-                model_debit = (
-                    _euro_call(spot, strike_long,  t2, r, q, iv2) -
-                    _euro_call(spot, strike_short, t1, r, q, iv1)
+            if shared_strike:
+                model_debit = max(0.001,
+                    _euro_call(spot, shared_strike, t2, 0.0, 0.0, iv2) -
+                    _euro_call(spot, shared_strike, t1, 0.0, 0.0, iv1)
                 )
 
             net_debit = None
-            if quote_long and quote_short:
-                nat = quote_long["ask"] - quote_short["bid"]
-                mid = quote_long["mid"] - quote_short["mid"]
+            debit_edge = None
+            if model_debit is not None:
+                nat = ((quote_long["ask"] - quote_short["bid"])
+                      if (quote_long and quote_short) else None)
+                mid = ((quote_long["mid"] - quote_short["mid"])
+                      if (quote_long and quote_short) else None)
                 if nat is not None and nat > 0:
                     net_debit = nat
                 elif mid is not None and mid > 0:
                     net_debit = mid
-
-            if (model_debit is not None and model_debit > 0
-                    and net_debit is not None):
+                else:
+                    net_debit = model_debit  # no live quotes -> edge is 0
+                net_debit = max(0.001, net_debit)
                 debit_edge = (net_debit - model_debit) / model_debit
-                if debit_edge > MAX_DEBIT_EDGE:
-                    continue
 
             results.append({
                 "ticker":       ticker,
@@ -518,6 +535,7 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
                 "ff":           round(ff * 100, 2),
                 "strike_short": strike_short,
                 "strike_long":  strike_long,
+                "debit_edge":   round(debit_edge, 4) if debit_edge is not None else None,
                 "short_bid":    quote_short["bid"] if quote_short else None,
                 "short_ask":    quote_short["ask"] if quote_short else None,
                 "short_mid":    quote_short["mid"] if quote_short else None,

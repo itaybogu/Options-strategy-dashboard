@@ -182,7 +182,13 @@ def scenario_ibkr_down_fallback_on():
     check("fallback_reason recorded", bool(st["fallback_reason"]), str(st))
 
     df = dp.download(["AAPL"], period="1mo")
-    check("download fell back (value 1.0)", float(df.iloc[0, 0]) == 1.0)
+    # download() fetches via .history() per ticker now (see its docstring),
+    # so this comes from _FakeYFTicker.history() (Close starts at 100), not
+    # the old _fake_yf_download stub (all 1.0s) -- 100 vs IBKR's 2.0
+    # (scenario_ibkr_happy above) is what actually proves the fallback
+    # happened.
+    check("download fell back to yfinance", float(df["Close"].iloc[0]) == 100.0,
+          f"got {df['Close'].iloc[0] if 'Close' in df else df.iloc[0,0]}")
 
     # yfinance fake has no ^IRX history path returning 5d Close/100 → uses
     # _FakeYFTicker.history, Close last = 104 → 1.04
@@ -238,7 +244,7 @@ def scenario_yfinance_explicit():
     ok = True
     try:
         tk = dp.get_ticker("AAPL")
-        df = dp.download(["AAPL"], period="1mo")
+        df = dp.download(["AAPL", "MSFT"], period="1mo")
         dp.get_risk_free_rate_raw()
     except AssertionError as e:
         ok = False
@@ -246,6 +252,11 @@ def scenario_yfinance_explicit():
     check("no IBKR calls made", ok)
     check("yfinance ticker returned",
           isinstance(provider_type(tk), _FakeYFTicker))
+    # Multi-ticker call, to actually test the MultiIndex shape: a single-
+    # ticker call deliberately flattens columns now (matching yf.download()'s
+    # own real single-symbol behavior), which strategy_vol_momentum.py's
+    # ^IRX risk-free-rate fallback branch depends on -- see
+    # data_provider.download()'s docstring.
     check("yfinance download shape", isinstance(df.columns, pd.MultiIndex))
 
     st = dp.provider_status()
