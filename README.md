@@ -16,7 +16,7 @@ Based on the logic presented in [this video](https://www.youtube.com/watch?v=oW6
 
 ### 4. Cash-Secured Puts
 Based on FCF, following the methodology presented in
-[this Goldman Sachs paper](https://optionsoffice.ru/wp-content/uploads/2016/03/Goldman-Sachs_The-art-of-put-selling.pdf).
+[this Goldman Sachs paper](https://www.docdroid.net/iMJWcbb/goldman-sachs-the-art-of-put-selling-pdf).
 
 
 # Infrastructure
