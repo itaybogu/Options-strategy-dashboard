@@ -15,20 +15,28 @@ Run:
 from __future__ import annotations
 
 import json
+import asyncio
 import threading
 import time
 import datetime
 import traceback
+import gc
+import tracemalloc
 from pathlib import Path
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI
+try:
+    from fastapi import Request
+except ImportError:  # minimal fastapi stub in tests/test_lifecycle.py
+    from typing import Any as Request  # type: ignore[assignment]
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 import data_provider
+import scan_control
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA PROVIDER CONFIG  ←── change these to switch market-data source
@@ -98,6 +106,12 @@ PS_MODE      = _env_str("PS_MODE", "fcf_premium").lower()
 PS_WEIGHT    = _env_str("PS_WEIGHT", "risk").lower()
 PS_QUINTILE  = _env_bool("PS_QUINTILE", True)
 PS_MAX_NAMES = _env_int("PS_MAX_NAMES", 0)
+# Seconds to pause before the put-selling phase-2 chain sweep. It runs LAST,
+# after three strategies have already hammered Yahoo, and the logs showed
+# every chain fetch in that window coming back "Too Many Requests" -- which
+# surfaced as "101 had no viable strike/chain" and an empty table. A cool-down
+# lets the rate limiter reset before the most expensive sweep begins.
+PS_COOLDOWN_SEC = _env_int("PS_COOLDOWN_SEC", 90)
 
 # ── Continuous-mode default ─────────────────────────────────────────────────
 # The scanner should be running the moment the process comes up — not only
@@ -112,6 +126,74 @@ PS_MAX_NAMES = _env_int("PS_MAX_NAMES", 0)
 # silently never run. Set CONTINUOUS_DEFAULT=false to disable.
 CONTINUOUS_DEFAULT      = _env_bool("CONTINUOUS_DEFAULT", True)
 CONTINUOUS_INTERVAL_SEC = max(30, _env_int("CONTINUOUS_INTERVAL_SEC", 60))
+
+# ── Strategy selection ──────────────────────────────────────────────────────
+# Which of the four strategies run (and are shown on the dashboard).
+#   python server.py --strategies "1,3"      -> vol_momentum + earnings only
+#   STRATEGIES="1,3" uvicorn server:app ...  -> same, for docker / uvicorn
+# Numbers follow the dashboard order; key names ("calendar") are accepted too.
+# Default: all four. The CLI flag wins over the env var.
+STRATEGY_ORDER: list[str] = ["vol_momentum", "calendar", "earnings", "put_selling"]
+_STRATEGY_ALIASES: dict[str, str] = {
+    "1": "vol_momentum", "2": "calendar", "3": "earnings", "4": "put_selling",
+    "vol_momentum": "vol_momentum", "vm": "vol_momentum", "vertical": "vol_momentum",
+    "calendar": "calendar", "cal": "calendar",
+    "earnings": "earnings", "straddle": "earnings",
+    "put_selling": "put_selling", "ps": "put_selling", "csp": "put_selling",
+}
+
+
+def _parse_strategy_selection(raw: Optional[str]) -> list[str]:
+    """'1,3' / '1 3' / 'vm,csp' -> ordered unique list of strategy keys."""
+    if raw is None or not str(raw).strip():
+        return list(STRATEGY_ORDER)
+    chosen: list[str] = []
+    for tok in str(raw).replace(";", ",").replace(" ", ",").split(","):
+        tok = tok.strip().lower()
+        if not tok:
+            continue
+        key = _STRATEGY_ALIASES.get(tok)
+        if key is None:
+            raise SystemExit(f"--strategies: unknown strategy '{tok}' "
+                            f"(use 1-4 or {', '.join(STRATEGY_ORDER)})")
+        if key not in chosen:
+            chosen.append(key)
+    return [k for k in STRATEGY_ORDER if k in chosen]
+
+
+def _strategy_selection_from_cli() -> Optional[str]:
+    """
+    Read --strategies from sys.argv without disturbing uvicorn's own parser:
+    parse_known_args ignores anything it doesn't recognise, and the flag is
+    read at import time so `uvicorn server:app` and `python server.py` behave
+    the same way.
+    """
+    import argparse
+    import sys
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--strategies", "-s", default=None)
+    ns, _ = p.parse_known_args(sys.argv[1:])
+    return ns.strategies
+
+
+ENABLED_STRATEGIES: list[str] = _parse_strategy_selection(
+    _strategy_selection_from_cli() or _env_str("STRATEGIES", "")
+)
+if ENABLED_STRATEGIES != STRATEGY_ORDER:
+    print(f"[server] Strategies enabled: {', '.join(ENABLED_STRATEGIES)} "
+          f"(disabled: {', '.join(k for k in STRATEGY_ORDER if k not in ENABLED_STRATEGIES)})")
+
+
+def _enabled(key: str) -> bool:
+    return key in ENABLED_STRATEGIES
+
+# ── Memory diagnostics (opt-in) ─────────────────────────────────────────────
+# tracemalloc adds real overhead (it tracks every allocation's call site), so
+# it's off unless explicitly requested — set MEMORY_DEBUG=true and restart to
+# turn it on for a diagnostic run, then hit GET /debug/memory.
+MEMORY_DEBUG = _env_bool("MEMORY_DEBUG", False)
+if MEMORY_DEBUG:
+    tracemalloc.start(10)  # keep 10 stack frames per allocation
 
 
 def _configure_data_provider() -> None:
@@ -155,6 +237,20 @@ def _sanitize(obj):
     if isinstance(obj, (list, tuple)):
         return [_sanitize(v) for v in obj]
     return obj
+
+
+def _now_iso(timespec: str = "seconds") -> str:
+    """
+    Timezone-AWARE UTC timestamp, e.g. '2026-09-24T10:15:00+00:00'.
+
+    Every timestamp the server hands to the browser MUST go through this.
+    datetime.now().isoformat() yields a *naive* string (no offset); JavaScript's
+    Date parser treats a naive ISO string as the browser's LOCAL time, so a UTC
+    container talking to a UTC+3 browser made every row look 3h older than it
+    was. With an explicit offset the browser converts correctly no matter what
+    zone either side runs in.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec=timespec)
 
 
 _lock = threading.Lock()
@@ -231,7 +327,7 @@ def _push_event(kind: str, strategy: str, payload: dict) -> None:
     """Append a SSE-compatible JSON event to the queue."""
     try:
         event = json.dumps({"kind": kind, "strategy": strategy, "payload": _sanitize(payload),
-                            "ts": datetime.datetime.now().isoformat()})
+                            "ts": _now_iso("microseconds")})
     except (TypeError, ValueError) as e:
         # Never let a bad payload kill the scan thread — log and skip this event
         print(f"[_push_event] Failed to serialize event ({kind}/{strategy}): {e}")
@@ -282,7 +378,11 @@ def _stamp(row: dict, cycle: int) -> dict:
     written, not when the cycle started, because a cycle can take many minutes
     and the first ticker scanned is genuinely older than the last.
     """
-    row["as_of"] = datetime.datetime.now().isoformat(timespec="seconds")
+    # `_keep_as_of` marks a re-published previous row (the ticker's fresh
+    # evaluation failed transiently): refresh the cycle stamp so it survives
+    # pruning, but keep the honest timestamp of when the signal was computed.
+    if not row.pop("_keep_as_of", False) or not row.get("as_of"):
+        row["as_of"] = _now_iso()
     row["cycle"] = cycle
     return row
 
@@ -331,7 +431,27 @@ def _drop_row(strategy: str, ticker: str | None) -> None:
             _state["strategies"][strategy]["results"] = kept
 
 
-def _prune_stale(strategy: str, keep_cycles: int = 2) -> None:
+# A ticker whose FILTERED reason matches one of these was rejected because the
+# DATA SOURCE failed, not because the name stopped qualifying. Such a rejection
+# must never delete a previously published signal: the signal stays until the
+# same ticker is successfully re-evaluated (either re-scored, which replaces the
+# row, or genuinely rejected on real data, which removes it).
+_TRANSIENT_REASON_MARKERS = (
+    "too many requests", "rate limit", "timed out", "timeout", "connection",
+    "history error", "options list error", "chain error", "unexpected error",
+    "fetch failed", "no options found", "could not determine", "all chain fetches",
+    "insufficient history", "insufficient close", "spot price unavailable",
+    "options list empty", "empty option chain", "no two-sided quotes",
+    "cannot compute rv20", "possibly delisted", "no price data",
+)
+
+
+def _is_transient_reason(reason) -> bool:
+    text = str(reason or "").lower()
+    return any(m in text for m in _TRANSIENT_REASON_MARKERS)
+
+
+def _prune_stale(strategy: str, keep_cycles: int = 2, min_fresh_rows: int = 1) -> None:
     """
     Drop rows that have not been refreshed for `keep_cycles` cycles.
 
@@ -339,10 +459,23 @@ def _prune_stale(strategy: str, keep_cycles: int = 2) -> None:
     Without pruning it would sit in the table forever showing an ever-older
     timestamp. Rows are kept for more than one cycle so a single transient data
     failure doesn't make a good candidate flicker out of the dashboard.
+
+    Guard: pruning only runs when the cycle that just finished actually
+    produced data for this strategy (at least `min_fresh_rows` rows stamped
+    with the current cycle). A cycle that came back empty -- Yahoo returning
+    429 for every ticker, the volume batch download yielding nothing -- has
+    told us nothing about whether the old signals still hold, so it must not
+    age them out. Left unguarded, two consecutive rate-limited cycles wiped
+    every table overnight, which is exactly what happened on a 12h run.
     """
     with _lock:
         cycle = _state.get("cycle", 0)
         rows  = _state["strategies"][strategy]["results"]
+        n_fresh_now = sum(1 for r in rows if r.get("cycle") == cycle)
+        if n_fresh_now < min_fresh_rows:
+            print(f"[scanner] {strategy}: cycle {cycle} produced no rows -- "
+                  f"skipping stale-prune, keeping {len(rows)} previous rows")
+            return
         fresh = [r for r in rows if cycle - r.get("cycle", cycle) < keep_cycles]
         dropped = len(rows) - len(fresh)
         if dropped:
@@ -406,15 +539,35 @@ def _strategy_failed(key: str, exc: BaseException) -> None:
 # SCANNER THREAD
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _scan_pipeline() -> None:
-    """Run the four strategies in sequence. Called only by _run_all_strategies."""
+def _scan_pipeline(only: Optional[str] = None) -> None:
+    """
+    Run the strategies in sequence. Called by _run_all_strategies (all of them)
+    and by the strategy-refresh endpoint (`only` = that one strategy).
+    """
+    def _skip(key: str) -> bool:
+        if not _enabled(key):
+            _update_strategy(key, status="disabled")
+            return True
+        return only is not None and key != only
+
     # ── Strategy 1: Vol & Momentum ────────────────────────────────────────────
-    try:
+    if _skip("vol_momentum"):
+        pass
+    else:
+      try:
         import strategy_vol_momentum as s1
         _update_strategy("vol_momentum", status="running")
         _push_event("strategy_started", "vol_momentum", {"label": "Vol & Momentum Screener"})
 
         vm_results: list[dict] = []
+        # Rows genuinely rejected this cycle are NOT deleted immediately. They
+        # are collected and only removed at the end of the cycle if the cycle
+        # itself was healthy (it scored at least one name). A cycle where Yahoo
+        # throttled everything can still emit a few "genuine-looking" rejections
+        # (a 429 dressed up as an empty chain); deleting on those, one ticker
+        # per cycle, is how the table drained to "Awaiting scan" over a night
+        # even with the stale-prune guard in place.
+        vm_pending_drops: set[str] = set()
 
         def on_vm_progress(result: dict) -> None:
             prog = result.get("_progress", {})
@@ -458,21 +611,40 @@ def _scan_pipeline() -> None:
                         exc[i] = entry
                     else:
                         exc.append(entry)
-                # A ticker that was scored last cycle but is filtered now must
-                # lose its stale result row, otherwise the dashboard shows a
-                # candidate the screener has already rejected.
-                _drop_row("vol_momentum", result.get("ticker"))
+                # A ticker that was scored last cycle but is genuinely filtered
+                # now must lose its stale result row. A rejection caused by the
+                # data source failing (rate limit, timeout, empty chain) says
+                # nothing about the signal, so the old row is kept until the
+                # ticker is re-evaluated on real data.
+                if not _is_transient_reason(result.get("reason")):
+                    tkr = result.get("ticker")
+                    if tkr:
+                        vm_pending_drops.add(tkr)
 
         s1.run(on_progress=on_vm_progress)
+
+        # Apply deferred drops only when this cycle proved the feed was alive.
+        # A ticker that was re-scored later in the same cycle is never dropped.
+        n_scored = sum(1 for r in vm_results if r.get("status") == "SCORED")
+        rescored = {r.get("ticker") for r in vm_results if r.get("status") == "SCORED"}
+        if n_scored > 0:
+            for tkr in vm_pending_drops - rescored:
+                _drop_row("vol_momentum", tkr)
+        elif vm_pending_drops:
+            print(f"[scanner] vol_momentum: cycle scored 0 names -- deferring "
+                  f"{len(vm_pending_drops)} genuine-looking rejections, keeping old rows")
         _prune_stale("vol_momentum")
         _update_strategy("vol_momentum", status="done")
         _push_event("strategy_done", "vol_momentum", {})
 
-    except BaseException as e:
+      except BaseException as e:
         _strategy_failed("vol_momentum", e)
 
     # ── Strategy 2: Calendar Spread ───────────────────────────────────────────
-    try:
+    if _skip("calendar"):
+        pass
+    else:
+      try:
         import strategy_calendar as s2
         _update_strategy("calendar", status="running")
         _push_event("strategy_started", "calendar", {"label": "Calendar Spread Screener"})
@@ -485,9 +657,22 @@ def _scan_pipeline() -> None:
             )
             pairs = event.get("pairs", [])
             if pairs:
-                # Upsert on (ticker, exp_short, exp_long): one ticker yields
-                # several rows, so this replaces last cycle's quote for the same
-                # expiry pair instead of stacking a duplicate beside it.
+                # This event is the ticker's COMPLETE fresh result set, so
+                # expiry pairs it no longer contains have stopped qualifying:
+                # drop them, then upsert the new ones on (ticker, exp_short,
+                # exp_long) so a re-quoted pair replaces last cycle's row
+                # instead of stacking a duplicate beside it. A ticker that
+                # returns zero pairs is NOT touched -- on yfinance that is
+                # nearly always a failed chain fetch, not a lost signal.
+                t = event.get("ticker")
+                keep = {(p.get("exp_short"), p.get("exp_long")) for p in pairs}
+                with _lock:
+                    rows = _state["strategies"]["calendar"]["results"]
+                    _state["strategies"]["calendar"]["results"] = [
+                        r for r in rows
+                        if r.get("ticker") != t
+                        or (r.get("exp_short"), r.get("exp_long")) in keep
+                    ]
                 _upsert_rows("calendar", pairs)
                 # Push each pair immediately so frontend renders rows as found
                 _push_event("ticker_result", "calendar", {
@@ -506,11 +691,14 @@ def _scan_pipeline() -> None:
         _update_strategy("calendar", status="done")
         _push_event("strategy_done", "calendar", {})
 
-    except BaseException as e:
+      except BaseException as e:
         _strategy_failed("calendar", e)
 
     # ── Strategy 3: Earnings Scanner ──────────────────────────────────────────
-    try:
+    if _skip("earnings"):
+        pass
+    else:
+      try:
         import strategy_earnings as s3
         _update_strategy("earnings", status="running")
         _push_event("strategy_started", "earnings", {"label": "Earnings Options Scanner"})
@@ -522,9 +710,24 @@ def _scan_pipeline() -> None:
                 progress={"current": prog.get("current", 0), "total": prog.get("total", 0)},
             )
             clean = {k: v for k, v in result.items() if not k.startswith("_")}
-            _upsert_rows("earnings", [clean])
+            # A data-source failure (rate limit, empty chain) must not replace
+            # a verdict we already hold for this ticker. Publish the error row
+            # only when there is nothing better on the table; otherwise keep
+            # the previous verdict and just refresh its cycle stamp so it is
+            # not aged out by _prune_stale.
+            publish = clean
+            if clean.get("error") and _is_transient_reason(clean.get("error")):
+                with _lock:
+                    prev = next((r for r in _state["strategies"]["earnings"]["results"]
+                                 if r.get("ticker") == clean.get("ticker") and not r.get("error")),
+                                None)
+                if prev is not None:
+                    publish = dict(prev)
+                    publish["_keep_as_of"] = True
+            _upsert_rows("earnings", [publish])
+            publish.pop("_keep_as_of", None)
             # Push full result immediately so frontend renders this row now
-            _push_event("ticker_result", "earnings", clean)
+            _push_event("ticker_result", "earnings", publish)
 
             _push_event("ticker_done", "earnings", {
                 "ticker":   result.get("ticker"),
@@ -541,7 +744,7 @@ def _scan_pipeline() -> None:
         _update_strategy("earnings", status="done")
         _push_event("strategy_done", "earnings", {})
 
-    except BaseException as e:
+      except BaseException as e:
         _strategy_failed("earnings", e)
 
     # ── Strategy 4: Put Selling (GS FCF) ────────────────────────────────────────
@@ -557,10 +760,21 @@ def _scan_pipeline() -> None:
     # progress bar looks like a hang), but `results` is populated once from run()'s
     # return value, after weighting. Each streamed row is marked provisional so the
     # dashboard can render it greyed and replace it on strategy_done.
+    if _skip("put_selling"):
+        return
     try:
         import strategy_put_selling as s4
         _update_strategy("put_selling", status="running")
         _push_event("strategy_started", "put_selling", {"label": "Put Selling (GS FCF)"})
+
+        if PS_COOLDOWN_SEC > 0 and data_provider.provider_status().get("effective") == "yfinance":
+            _update_strategy("put_selling", phase="cooldown")
+            _push_event("phase_update", "put_selling", {
+                "phase":   "cooldown",
+                "message": f"Cooling down {PS_COOLDOWN_SEC}s to let Yahoo rate limit reset",
+                "progress": {"current": 0, "total": 0},
+            })
+            time.sleep(PS_COOLDOWN_SEC)
 
         def on_ps_progress(event: dict) -> None:
             prog  = event.get("_progress", {}) or {}
@@ -619,16 +833,35 @@ def _scan_pipeline() -> None:
         ])
         _prune_stale("put_selling")
         with _lock:
-            _state["strategies"]["put_selling"]["summary"] = ps_summary
+            # Only overwrite the book summary when this cycle actually produced
+            # a book. On a dry cycle the previous rows are kept (see
+            # _upsert_rows / _prune_stale), so the summary must stay consistent
+            # with them rather than collapsing to {"count": 0}.
+            merged_rows = _state["strategies"]["put_selling"]["results"]
+        if ps_results:
+            # Weights were normalised over THIS cycle's set only; after the
+            # upsert the visible book is the union with surviving older rows,
+            # so recompute the strip over exactly the rows on screen.
+            ps_summary = s4.portfolio_summary(merged_rows)
+            with _lock:
+                _state["strategies"]["put_selling"]["summary"] = ps_summary
+        else:
+            with _lock:
+                ps_summary = _state["strategies"]["put_selling"].get("summary") or ps_summary
 
         _update_strategy("put_selling", status="done")
         # Final payload carries the authoritative weighted rows. The dashboard
         # replaces any provisional rows with these.
+        # Ship the MERGED server-side book (this cycle's rows upserted over the
+        # survivors from earlier cycles), not only this cycle's return value.
+        # The dashboard replaces its table wholesale with this payload, so
+        # sending a partial set -- e.g. the single name that priced before Yahoo
+        # started returning 429 -- collapsed the visible book to one row.
         _push_event("strategy_done", "put_selling", {
-            "results": _sanitize([{k: v for k, v in r.items() if not k.startswith("_")}
-                                  for r in ps_results]),
+            "results": _sanitize(merged_rows),
             "summary": _sanitize(ps_summary),
-            "count":   len(ps_results),
+            "count":   len(merged_rows),
+            "fresh":   len(ps_results),
         })
 
     except BaseException as e:
@@ -655,10 +888,10 @@ def _run_all_strategies(reset: bool = True) -> None:
         _state["phase"]       = "prefetch"
         _state["prefetch"]    = {"status": "idle", "detail": ""}
         _state["running"]     = True
-        _state["started_at"]  = _state["started_at"] or datetime.datetime.now().isoformat()
+        _state["started_at"]  = _state["started_at"] or _now_iso()
         _state["finished_at"] = None
         _state["cycle"]      += 1
-        _state["cycle_started_at"]  = datetime.datetime.now().isoformat()
+        _state["cycle_started_at"]  = _now_iso()
         _state["cycle_finished_at"] = None
         _state["next_cycle_at"]     = None
         cycle_no = _state["cycle"]
@@ -689,6 +922,8 @@ def _run_all_strategies(reset: bool = True) -> None:
     _prefetch_errors: list[str] = []
     for _mod in ("strategy_vol_momentum", "strategy_calendar", "strategy_earnings",
                  "strategy_put_selling"):
+        if _mod.replace("strategy_", "") not in ENABLED_STRATEGIES:
+            continue
         try:
             __import__(_mod)
         except BaseException as e:
@@ -711,9 +946,10 @@ def _run_all_strategies(reset: bool = True) -> None:
     finally:
         with _lock:
             _state["running"]     = False
-            _state["finished_at"] = datetime.datetime.now().isoformat()
+            _state["finished_at"] = _now_iso()
             _state["cycle_finished_at"] = _state["finished_at"]
-            statuses = [s["status"] for s in _state["strategies"].values()]
+            statuses = [s["status"] for k, s in _state["strategies"].items()
+                        if _enabled(k)]
             # "error" only when the whole run blew up or every strategy failed;
             # a partial failure still counts as done so results stay viewable.
             if failed or all(st == "error" for st in statuses):
@@ -768,7 +1004,19 @@ def _continuous_loop(interval_sec: int) -> None:
             if _stop_event.is_set():
                 break
 
-            nxt = datetime.datetime.now() + datetime.timedelta(seconds=interval_sec)
+            # Resource line per cycle: if open_fds or threads climbs cycle
+            # after cycle, something is leaking and these logs show it days
+            # before the OS limit is hit.
+            try:
+                import os
+                _fds = len(os.listdir("/proc/self/fd"))
+            except Exception:
+                _fds = -1
+            print(f"[scanner] resources: open_fds={_fds} threads={threading.active_count()} "
+                  f"sse_clients={_sse_clients} rss_mb={_rss_mb()}")
+
+            nxt = (datetime.datetime.now(datetime.timezone.utc)
+                   + datetime.timedelta(seconds=interval_sec))
             with _lock:
                 _state["next_cycle_at"] = nxt.isoformat(timespec="seconds")
             _push_event("cycle_sleep", "all", {
@@ -913,11 +1161,271 @@ async def stop_continuous():
     return JSONResponse({"ok": True, "mid_cycle": mid_cycle})
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# ON-DEMAND SIGNAL REFRESH
+#
+# The dashboard's ⟳ Refresh button re-fetches ONE signal on live data. The
+# background scan is paused (scan_control.priority) for the duration: it
+# finishes the ticker it is on, then waits, so the refresh has the data
+# provider to itself and is not queued behind hundreds of tickers.
+# ──────────────────────────────────────────────────────────────────────────
+import scan_control
+
+_refresh_lock = threading.Lock()   # one refresh at a time
+
+
+def _refresh_signal(strategy: str, ticker: str, row_key: dict) -> dict:
+    import market_cache
+    t = ticker.upper()
+    with _lock:
+        prev_rows = [dict(r) for r in _state["strategies"][strategy]["results"]
+                     if r.get("ticker") == t]
+
+    _push_event("refresh_started", strategy, {"ticker": t})
+    with scan_control.priority():
+        market_cache.clear_symbol(t)
+
+        if strategy == "vol_momentum":
+            import strategy_vol_momentum as s1
+            r = s1.refresh_one(t, prev_rows[0] if prev_rows else None)
+            if r.get("status") != "SCORED":
+                return {"ok": False, "reason": r.get("reason") or "no longer qualifies"}
+            clean = {k: v for k, v in r.items() if not k.startswith("_")}
+            _upsert_rows("vol_momentum", [clean])
+            return {"ok": True, "row": clean}
+
+        if strategy == "calendar":
+            import strategy_calendar as s2
+            pairs = s2.refresh_one(t, prev_rows)
+            if not pairs:
+                return {"ok": False, "reason": "no qualifying pair or no two-sided quote on refresh"}
+            keep = {(p.get("exp_short"), p.get("exp_long")) for p in pairs}
+            with _lock:
+                rows = _state["strategies"]["calendar"]["results"]
+                _state["strategies"]["calendar"]["results"] = [
+                    r for r in rows
+                    if r.get("ticker") != t or (r.get("exp_short"), r.get("exp_long")) in keep]
+            _upsert_rows("calendar", pairs)
+            want = (row_key.get("exp_short"), row_key.get("exp_long"))
+            row = next((p for p in pairs if (p.get("exp_short"), p.get("exp_long")) == want), None)
+            return {"ok": True, "pairs": pairs, "row": row,
+                    "reason": None if row else "this expiry pair no longer qualifies; "
+                                              "the ticker's other pairs were updated"}
+
+        if strategy == "earnings":
+            import strategy_earnings as s3
+            r = s3.refresh_one(t, prev_rows[0] if prev_rows else None)
+            clean = {k: v for k, v in r.items() if not k.startswith("_")}
+            if clean.get("error"):
+                return {"ok": False, "reason": clean["error"]}
+            _upsert_rows("earnings", [clean])
+            return {"ok": True, "row": clean}
+
+        if strategy == "put_selling":
+            import strategy_put_selling as s4
+            cand = s4.refresh_one(t, prev_rows[0] if prev_rows else None, mode=PS_MODE)
+            if not cand:
+                return {"ok": False, "reason": "no qualifying strike on refresh"}
+            clean = {k: v for k, v in cand.items() if not k.startswith("_")}
+            _upsert_rows("put_selling", [clean])
+            # Weights are relative to the whole book: reweight every row.
+            with _lock:
+                book = _state["strategies"]["put_selling"]["results"]
+                s4.apply_weights(book, scheme=PS_WEIGHT)
+                _state["strategies"]["put_selling"]["summary"] = s4.portfolio_summary(book)
+                row = next((dict(r) for r in book if r.get("ticker") == t), clean)
+                results_snap = [dict(r) for r in book]
+                summary = _state["strategies"]["put_selling"]["summary"]
+            return {"ok": True, "row": row, "results": results_snap, "summary": summary}
+
+    return {"ok": False, "reason": f"unknown strategy {strategy}"}
+
+
+@app.post("/refresh_signal")
+def refresh_signal(body: dict):
+    """
+    Body: {"strategy": "vol_momentum"|"calendar"|"earnings"|"put_selling",
+           "ticker": "AAPL", "exp_short": ..., "exp_long": ...}
+    Sync endpoint: FastAPI runs it in its threadpool, so the blocking fetch
+    never stalls the event loop (SSE keeps streaming meanwhile).
+    """
+    strategy = (body or {}).get("strategy")
+    ticker   = ((body or {}).get("ticker") or "").strip()
+    if strategy not in _state["strategies"] or not ticker:
+        return JSONResponse({"ok": False, "reason": "strategy and ticker required"}, status_code=400)
+    if not _enabled(strategy):
+        return JSONResponse({"ok": False, "reason": "strategy disabled"}, status_code=400)
+    if not _refresh_lock.acquire(blocking=False):
+        return JSONResponse({"ok": False, "reason": "another refresh is running"}, status_code=409)
+    t0 = time.time()
+    try:
+        out = _refresh_signal(strategy, ticker, body)
+    except Exception as e:
+        out = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+    finally:
+        _refresh_lock.release()
+    out["elapsed_sec"] = round(time.time() - t0, 1)
+    out = _sanitize(out)
+    _push_event("refresh_done", strategy, {"ticker": ticker.upper(), "ok": out.get("ok")})
+    print(f"[refresh] {strategy} {ticker.upper()}: ok={out.get('ok')} "
+          f"in {out['elapsed_sec']}s {out.get('reason') or ''}")
+    return JSONResponse(out)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# ON-DEMAND STRATEGY REFRESH
+#
+# The ⟳ on a strategy header re-runs that strategy's full pass right away.
+# The background cycle pauses at its next ticker boundary (scan_control.
+# strategy_priority) and resumes where it stopped once this pass ends. A
+# single-signal refresh still preempts it (scan_control.priority).
+# ──────────────────────────────────────────────────────────────────────────
+_strategy_refresh_active: set[str] = set()
+_strategy_refresh_guard = threading.Lock()
+
+
+def _strategy_refresh_worker(key: str) -> None:
+    t0 = time.time()
+    ok = True
+    try:
+        with scan_control.strategy_priority():
+            _push_event("strategy_refresh_started", key, {})
+            _scan_pipeline(only=key)
+    except BaseException as e:
+        ok = False
+        print(f"[strategy-refresh] {key} failed: {type(e).__name__}: {e}")
+    finally:
+        with _strategy_refresh_guard:
+            _strategy_refresh_active.discard(key)
+        el = round(time.time() - t0, 1)
+        _push_event("strategy_refresh_done", key, {"ok": ok, "elapsed_sec": el})
+        print(f"[strategy-refresh] {key}: ok={ok} in {el}s")
+
+
+@app.post("/refresh_strategy")
+def refresh_strategy(body: dict):
+    """Body: {"strategy": "vol_momentum"|"calendar"|"earnings"|"put_selling"}"""
+    key = (body or {}).get("strategy")
+    if key not in _state["strategies"]:
+        return JSONResponse({"ok": False, "reason": "unknown strategy"}, status_code=400)
+    if not _enabled(key):
+        return JSONResponse({"ok": False, "reason": "strategy disabled"}, status_code=400)
+    with _strategy_refresh_guard:
+        if key in _strategy_refresh_active:
+            return JSONResponse({"ok": False, "reason": "this strategy is already refreshing"},
+                                status_code=409)
+        if _strategy_refresh_active:
+            # One strategy refresh at a time; a second one would just interleave
+            # with the first at ticker granularity and finish both later.
+            busy = next(iter(_strategy_refresh_active))
+            return JSONResponse({"ok": False, "reason": f"{busy} is refreshing; try again when it finishes"},
+                                status_code=409)
+        _strategy_refresh_active.add(key)
+    threading.Thread(target=_strategy_refresh_worker, args=(key,),
+                     name=f"strategy-refresh-{key}", daemon=True).start()
+    return JSONResponse({"ok": True, "started": True})
+
+
 @app.get("/results")
 async def get_results():
     with _lock:
         import copy
-        return JSONResponse(_sanitize(copy.deepcopy(_state)))
+        snap = copy.deepcopy(_state)
+    # Tell the dashboard which sections to show. Disabled strategies stay in
+    # the dict (the JS indexes it by key) but are flagged and carry no rows.
+    snap["enabled_strategies"] = list(ENABLED_STRATEGIES)
+    for k, s in snap.get("strategies", {}).items():
+        s["enabled"] = _enabled(k)
+    return JSONResponse(_sanitize(snap))
+
+
+def _rss_mb() -> Optional[float]:
+    """Actual resident memory, straight from the kernel — the number that
+    matters for OOM, as opposed to anything Python's own accounting reports
+    (which can miss memory held by C extensions, e.g. pandas/numpy buffers
+    or whatever ib_insync/asyncio allocate outside Python's own heap)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)  # kB -> MB
+    except Exception:
+        pass
+    return None
+
+
+@app.get("/debug/memory")
+async def debug_memory():
+    """
+    Diagnostic snapshot for tracking down memory growth in a long-running
+    continuous-mode process. Three independent views, since each catches a
+    different kind of leak:
+
+      - gc object counts by type: a runaway Python-level structure (a list
+        or dict growing without bound) shows up as one type's count being
+        absurdly large relative to how many of that thing should ever exist
+        at once.
+      - tracemalloc top allocations (only when MEMORY_DEBUG=true, since it
+        has real overhead): points at the exact file/line responsible,
+        rather than just the object type.
+      - rss_mb: the actual number the kernel would OOM-kill on. Useful as a
+        sanity check against the two views above — if this keeps climbing
+        but neither view shows a runaway Python object, the leak is likely
+        in a C extension's own memory (pandas, numpy, or ib_insync/asyncio
+        internals) that neither gc nor tracemalloc can see into.
+    """
+    gc.collect()
+    type_counts: dict[str, int] = {}
+    for obj in gc.get_objects():
+        t = type(obj).__name__
+        type_counts[t] = type_counts.get(t, 0) + 1
+    top_types = sorted(type_counts.items(), key=lambda kv: -kv[1])[:25]
+
+    # Open file descriptors: the number that actually caused the 11-day crash
+    # ("[Errno 24] Too many open files"). Linux only; a steadily rising value
+    # across cycles while rss stays flat means a socket/session leak.
+    try:
+        import os
+        open_fds: Optional[int] = len(os.listdir("/proc/self/fd"))
+    except Exception:
+        open_fds = None
+
+    result = {
+        "rss_mb": _rss_mb(),
+        "open_fds": open_fds,
+        "threads": threading.active_count(),
+        "sse_clients": _sse_clients,
+        "gc_total_objects": len(gc.get_objects()),
+        "gc_top_object_types": [{"type": t, "count": c} for t, c in top_types],
+        "sse_events_count": len(_sse_events),
+    }
+
+    try:
+        import market_cache
+        result["market_cache_stats"] = market_cache.stats()
+    except Exception:
+        pass
+
+    try:
+        import ibkr_provider
+        result["ibkr_connection_status"] = ibkr_provider.connection_status()
+    except Exception:
+        pass
+
+    if MEMORY_DEBUG:
+        snapshot = tracemalloc.take_snapshot()
+        top = snapshot.statistics("lineno")[:25]
+        result["tracemalloc_top_allocations"] = [
+            {"location": str(stat.traceback[0]),
+             "size_mb": round(stat.size / (1024 * 1024), 3),
+             "count": stat.count}
+            for stat in top
+        ]
+    else:
+        result["tracemalloc"] = ("disabled — set MEMORY_DEBUG=true and "
+                                  "restart for file/line-level allocation data")
+
+    return JSONResponse(result)
 
 
 @app.get("/health")
@@ -1039,33 +1547,83 @@ def provider_probe():
         }), status_code=200)
 
 
+# ── SSE client accounting ────────────────────────────────────────────────────
+#
+# Every /stream connection holds a socket for its whole life. The previous
+# implementation was a sync generator with `while True` + time.sleep(1): it
+# never checked whether the browser was still there, so every closed tab,
+# laptop sleep, reconnect-after-3s and bot probe left one socket AND one
+# threadpool worker pinned forever. Over 11 days that is how the process ran
+# out of file descriptors ("Too many open files") and why the UI got slower
+# first -- the blocking sleeps starved the threadpool that serves /results.
+#
+# Now: async generator (no thread pinned), disconnect detected via
+# request.is_disconnected() and the generator's finally block, a hard cap on
+# simultaneous streams, and a lifetime cap so even a half-open socket the OS
+# never reports as closed is recycled (the browser's EventSource reconnects
+# transparently and receives a fresh snapshot).
+_SSE_MAX_CLIENTS   = _env_int("SSE_MAX_CLIENTS", 20)
+_SSE_MAX_LIFETIME  = _env_int("SSE_MAX_LIFETIME_SEC", 3600)
+_sse_clients       = 0
+_sse_clients_lock  = threading.Lock()
+
+
 @app.get("/stream")
-async def stream_events():
+async def stream_events(request: Request):
     """
     Server-Sent Events endpoint.
     The client connects once and receives all events as they are pushed.
     """
-    def event_generator():
-        # Send current state snapshot first
-        with _lock:
-            snapshot = json.dumps({"kind": "snapshot", "strategy": "all",
-                                   "payload": _sanitize(_state),
-                                   "ts": datetime.datetime.now().isoformat()})
-        yield f"data: {snapshot}\n\n"
+    global _sse_clients
+    with _sse_clients_lock:
+        if _sse_clients >= _SSE_MAX_CLIENTS:
+            return JSONResponse({"error": "too many SSE clients"}, status_code=503)
+        _sse_clients += 1
 
-        last_idx = len(_sse_events)
+    async def event_generator():
+        global _sse_clients
+        started = time.monotonic()
+        try:
+            # Send current state snapshot first
+            with _lock:
+                snapshot = json.dumps({"kind": "snapshot", "strategy": "all",
+                                       "payload": {**_sanitize(_state),
+                                                   "enabled_strategies": list(ENABLED_STRATEGIES)},
+                                       "ts": _now_iso("microseconds")})
+            yield f"data: {snapshot}\n\n"
 
-        while True:
-            with _sse_lock:
-                new_events = _sse_events[last_idx:]
-                last_idx   = len(_sse_events)
+            last_idx = len(_sse_events)
+            last_beat = time.monotonic()
 
-            for ev in new_events:
-                yield f"data: {ev}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                if time.monotonic() - started > _SSE_MAX_LIFETIME:
+                    # Recycle: client reconnects and gets a fresh snapshot.
+                    break
 
-            # Send a heartbeat every 5s to keep connection alive
-            yield ": heartbeat\n\n"
-            time.sleep(1.0)
+                with _sse_lock:
+                    # The queue is trimmed from the front when it exceeds
+                    # 10k; if that happened under us, clamp rather than
+                    # replaying from a shifted index.
+                    if last_idx > len(_sse_events):
+                        last_idx = len(_sse_events)
+                    new_events = _sse_events[last_idx:]
+                    last_idx   = len(_sse_events)
+
+                for ev in new_events:
+                    yield f"data: {ev}\n\n"
+
+                # Heartbeat every 5s keeps proxies from closing the socket
+                # and makes a dead peer surface as a write error promptly.
+                now = time.monotonic()
+                if now - last_beat >= 5.0:
+                    yield ": heartbeat\n\n"
+                    last_beat = now
+                await asyncio.sleep(1.0)
+        finally:
+            with _sse_clients_lock:
+                _sse_clients = max(0, _sse_clients - 1)
 
     return StreamingResponse(
         event_generator(),
@@ -1084,6 +1642,8 @@ if __name__ == "__main__":
     print("  Open http://localhost:8000 in your browser")
     print(f"  Data provider: {DATA_PROVIDER}"
           + (f"  (TWS {IBKR_HOST}:{IBKR_PORT})" if DATA_PROVIDER == "ibkr" else ""))
+    print(f"  Strategies: {', '.join(ENABLED_STRATEGIES)}"
+          + ("" if ENABLED_STRATEGIES == STRATEGY_ORDER else "  (--strategies)"))
     print("═" * 60 + "\n")
     try:
         uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")

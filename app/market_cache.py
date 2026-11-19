@@ -183,6 +183,29 @@ def clear(prefix: Optional[str] = None) -> int:
         return len(doomed)
 
 
+def clear_symbol(symbol: str) -> int:
+    """
+    Drop the market data cached for ONE symbol (quote, option chains, history,
+    expiries and the memoised ticker object) so the next read hits the
+    provider. Fundamentals (info / cash flow / balance sheet) are kept: they
+    change quarterly, not intraday. Used by the dashboard's per-signal refresh.
+    """
+    s = symbol.upper()
+    # Exact segment matches: "quote:A" must not also clear "quote:AAPL".
+    exact  = (f":quote:{s}", f":exp:{s}")
+    within = (f":chain:{s}:", f":hist:{s}:")
+    with _lock:
+        doomed = []
+        for k in _store:
+            kk = ":" + k                     # keys may or may not carry a scope prefix
+            if (kk.endswith(exact) or any(w in kk for w in within)
+                    or (k.startswith("tickerobj:") and k.endswith(f":{s}"))):
+                doomed.append(k)
+        for k in doomed:
+            del _store[k]
+        return len(doomed)
+
+
 def _evict_if_needed() -> None:
     """Caller must hold _lock."""
     if len(_store) <= MAX_ENTRIES:

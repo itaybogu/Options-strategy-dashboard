@@ -506,6 +506,58 @@ tr:hover td { background: rgba(0,200,232,0.03); }
   transition:all .15s; flex-shrink:0; font-family:var(--sans); line-height:1; padding:0;
 }
 .info-btn:hover { border-color:var(--cyan); color:var(--cyan); background:var(--cyan-d); }
+.strat-refresh-btn {
+  height:22px; min-width:22px; border-radius:11px; padding:0 6px;
+  border:1.5px solid var(--muted); background:transparent; color:var(--dim);
+  font-family:var(--sans); font-size:13px; line-height:1; cursor:pointer;
+  flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center;
+  transition:all .15s;
+}
+.strat-refresh-btn:hover:not(:disabled) { border-color:var(--cyan); color:var(--cyan); background:var(--cyan-d); }
+.strat-refresh-btn.busy { border-color:var(--cyan); color:var(--cyan); cursor:wait; font-size:10px; padding:0 7px; }
+.strat-refresh-btn:disabled { opacity:.55; }
+
+/* ── Put-call parity twin ── */
+.payoff-refresh-btn { margin-right:8px; border-color:var(--cyan); color:var(--cyan); }
+.payoff-refresh-btn:disabled { opacity:.6; cursor:wait; }
+.payoff-refresh-info { margin-right:10px; font-size:11px; color:var(--dim); white-space:nowrap; align-self:center; }
+.payoff-refresh-info.busy { color:var(--yellow); }
+.payoff-refresh-info.ok   { color:var(--green); }
+.payoff-refresh-info.warn { color:var(--yellow); white-space:normal; max-width:320px; }
+.parity-badge {
+  display:inline-block; margin-left:6px; padding:1px 6px; font-size:10px; font-weight:700;
+  letter-spacing:.3px; border:1px solid var(--green); color:var(--green); border-radius:3px;
+  vertical-align:middle; cursor:help;
+}
+.parity-badge-warn { border-color:var(--yellow); color:var(--yellow); }
+.parity-bar {
+  margin:0 0 12px; padding:10px 12px; border:1px solid var(--border2);
+  background:var(--surface2); font-size:12px; line-height:1.5;
+}
+.parity-bar-good  { border-color:var(--green); }
+.parity-bar-muted { color:var(--dim); font-style:italic; }
+.parity-head {
+  display:flex; justify-content:space-between; align-items:center; gap:12px;
+  margin-bottom:8px; flex-wrap:wrap;
+}
+.parity-btn {
+  background:var(--cyan-d); border:1px solid var(--cyan); color:var(--cyan);
+  padding:5px 12px; font-size:11px; font-weight:700; letter-spacing:.4px;
+  cursor:pointer; white-space:nowrap; font-family:inherit;
+}
+.parity-btn:hover { background:var(--cyan); color:#000; }
+.parity-row {
+  display:grid; grid-template-columns:150px 1fr auto auto auto; gap:14px;
+  padding:5px 8px; border-left:3px solid transparent; color:var(--dim);
+  font-variant-numeric:tabular-nums;
+}
+.parity-row-active { border-left-color:var(--cyan); color:var(--text-bright); background:rgba(255,255,255,.03); }
+.parity-row-lbl  { font-weight:700; }
+.parity-row-legs { font-family:ui-monospace, monospace; }
+.parity-row-num  { white-space:nowrap; }
+.parity-gap  { margin-top:6px; color:var(--dim); font-size:11px; }
+.parity-warn { margin-top:4px; color:var(--yellow); font-size:11px; }
+@media (max-width:900px) { .parity-row { grid-template-columns:1fr; gap:2px; } }
 
 /* ── Info modal ── */
 .info-overlay {
@@ -598,6 +650,7 @@ tr:hover td { background: rgba(0,200,232,0.03); }
           Vol &amp; Momentum Screener
         </span>
         <button class="info-btn" onclick="showInfo('vol_momentum')" title="Strategy info">i</button>
+        <button class="strat-refresh-btn" id="srefresh-vol_momentum" onclick="refreshStrategy('vol_momentum')" title="Rescan this strategy now (takes priority over the background scan)">&#x27F3;</button>
         <span class="strategy-badge badge-idle" id="badge-vol_momentum">Idle</span>
         <span class="strategy-spacer"></span>
         <span class="strategy-count" id="count-vol_momentum"></span>
@@ -704,6 +757,7 @@ tr:hover td { background: rgba(0,200,232,0.03); }
           Calendar Spread Screener
         </span>
         <button class="info-btn" onclick="showInfo('calendar')" title="Strategy info">i</button>
+        <button class="strat-refresh-btn" id="srefresh-calendar" onclick="refreshStrategy('calendar')" title="Rescan this strategy now (takes priority over the background scan)">&#x27F3;</button>
         <span class="strategy-badge badge-idle" id="badge-calendar">Idle</span>
         <span class="strategy-spacer"></span>
         <span class="strategy-count" id="count-calendar"></span>
@@ -803,6 +857,7 @@ tr:hover td { background: rgba(0,200,232,0.03); }
           Earnings Options Scanner
         </span>
         <button class="info-btn" onclick="showInfo('earnings')" title="Strategy info">i</button>
+        <button class="strat-refresh-btn" id="srefresh-earnings" onclick="refreshStrategy('earnings')" title="Rescan this strategy now (takes priority over the background scan)">&#x27F3;</button>
         <span class="strategy-badge badge-idle" id="badge-earnings">Idle</span>
         <span class="strategy-spacer"></span>
         <span class="strategy-count" id="count-earnings"></span>
@@ -887,6 +942,7 @@ tr:hover td { background: rgba(0,200,232,0.03); }
           Cash-Secured Put Writing
         </span>
         <button class="info-btn" onclick="showInfo('put_selling')" title="Strategy info">i</button>
+        <button class="strat-refresh-btn" id="srefresh-put_selling" onclick="refreshStrategy('put_selling')" title="Rescan this strategy now (takes priority over the background scan)">&#x27F3;</button>
         <span class="strategy-badge badge-idle" id="badge-put_selling">Idle</span>
         <span class="strategy-spacer"></span>
         <!-- Read-only echo of the env-driven config so the operator can see which
@@ -1009,9 +1065,12 @@ tr:hover td { background: rgba(0,200,232,0.03); }
         <div class="payoff-hdr-title" id="payoffTitle">—</div>
         <div class="payoff-hdr-sub"   id="payoffSub">—</div>
       </div>
+      <span class="payoff-refresh-info" id="payoffRefreshInfo"></span>
+      <button class="payoff-close-btn payoff-refresh-btn" id="payoffRefreshBtn" onclick="refreshSignal()" title="Re-fetch this signal on live quotes now. The background scan pauses until it finishes.">⟳ REFRESH</button>
       <button class="payoff-close-btn" onclick="closePayoff()">✕ CLOSE</button>
     </div>
     <div class="payoff-body">
+      <div class="parity-bar" id="parityBar" style="display:none"></div>
       <div class="payoff-meta-strip" id="payoffMeta"></div>
       <div class="payoff-canvas-wrap">
         <canvas id="payoffCanvas" height="340"></canvas>
@@ -1075,9 +1134,18 @@ tickClock();
    render that as a small relative-time cell; refreshTimestamps() ticks the
    text every 30s so "3s ago" doesn't silently drift to "9m ago" without a
    full re-render. */
+/* Server timestamps are UTC with an explicit offset ('...+00:00'). If one
+   arrives WITHOUT an offset (older server build), the JS Date parser would
+   read it as browser-local time and mis-age it by the UTC offset -- the
+   "always 3h ago" bug. Force naive strings to UTC so both forms agree. */
+function parseServerTime(iso) {
+  if (!iso) return NaN;
+  const hasOffset = /(Z|[+-]\d{2}:?\d{2})$/i.test(iso);
+  return new Date(hasOffset ? iso : iso + 'Z').getTime();
+}
 function relTime(iso) {
   if (!iso) return '—';
-  const t = new Date(iso).getTime();
+  const t = parseServerTime(iso);
   if (isNaN(t)) return '—';
   const s = Math.max(0, Math.round((Date.now() - t) / 1000));
   if (s < 5)     return 'just now';
@@ -1087,7 +1155,9 @@ function relTime(iso) {
   return Math.round(s / 86400) + 'd ago';
 }
 function tsCell(iso) {
-  return `<td class="td-dim" title="${iso ? 'as of ' + iso : ''}">${relTime(iso)}</td>`;
+  const t = parseServerTime(iso);
+  const local = isNaN(t) ? '' : 'as of ' + new Date(t).toLocaleString();
+  return `<td class="td-dim" title="${local}">${relTime(iso)}</td>`;
 }
 setInterval(() => {
   if (STATE.vol_momentum.results.length) renderVM();
@@ -1193,7 +1263,8 @@ function startNextCycleCountdown(nextIso) {
   if (NEXT_CYCLE_TIMER) clearInterval(NEXT_CYCLE_TIMER);
   const label = document.getElementById('nextCycleLabel');
   if (!nextIso) { if (label) label.textContent = ''; return; }
-  const target = new Date(nextIso).getTime();
+  const target = parseServerTime(nextIso);
+  if (isNaN(target)) { if (label) label.textContent = ''; return; }
   function tick() {
     const remain = Math.max(0, Math.round((target - Date.now()) / 1000));
     if (label) label.textContent = remain > 0 ? `Next scan in ${remain}s` : 'Starting next scan…';
@@ -1222,19 +1293,99 @@ function connectSSE() {
   };
 }
 
+// Fetches this strategy's current server-side state and swaps it into the
+// visible table wholesale. Used by both a clean strategy_done and a
+// strategy_error — either way, whatever the server actually has right now
+// (complete pass or partial progress before a crash) replaces what's on
+// screen, all at once, never row-by-row mid-scan.
+// Row identity mirrors server.py's _row_identity: calendar rows are unique per
+// (ticker, expiry pair); every other strategy is one row per ticker.
+function _rowKey(strategy, r) {
+  return strategy === 'calendar'
+    ? `${r.ticker}|${r.exp_short}|${r.exp_long}`
+    : `${r.ticker}`;
+}
+
+// Insert-or-replace a single row in a strategy's table. This is the only way
+// rows get into STATE from live events, so a ticker can never appear twice and
+// an old signal is only ever overwritten by a newer one for the same ticker.
+function _upsertRow(strategy, r) {
+  const list = STATE[strategy].results;
+  const key  = _rowKey(strategy, r);
+  const idx  = list.findIndex(x => _rowKey(strategy, x) === key);
+  if (idx >= 0) list[idx] = r;
+  else          list.push(r);
+}
+
+function _swapInLatestResults(strategy) {
+  fetch('/results').then(r => r.json()).then(data => {
+    const st = data.strategies?.[strategy];
+    if (st?.results) {
+      STATE[strategy].results = st.results;
+      if (strategy === 'put_selling') PS_SUMMARY = st.summary || null;
+      if (strategy === 'vol_momentum') {
+        const nScored = st.results.filter(r => r.status === 'SCORED').length;
+        VM_FILTERED_COUNT = Math.max(0, (st.progress?.current || 0) - nScored);
+        if (Array.isArray(st.excluded)) VM_EXCLUDED = st.excluded.slice();
+        const filtEl = document.getElementById('vm-filtered');
+        if (filtEl) filtEl.textContent = VM_FILTERED_COUNT;
+      }
+      renderStrategy(strategy);
+    }
+  });
+}
+
+function setStratRefreshBusy(key, busy) {
+  const b = document.getElementById('srefresh-' + key);
+  if (!b) return;
+  b.disabled = busy;
+  b.classList.toggle('busy', busy);
+  b.textContent = busy ? 'rescanning…' : '\u27F3';
+}
+
+async function refreshStrategy(key) {
+  setStratRefreshBusy(key, true);
+  try {
+    const res = await fetch('/refresh_strategy', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy: key }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out.ok) {
+      setStratRefreshBusy(key, false);
+      setGlobalDetail(`Rescan not started: ${out.reason || res.status}`);
+    }
+  } catch (e) {
+    setStratRefreshBusy(key, false);
+    setGlobalDetail(`Rescan request failed: ${e}`);
+  }
+}
+
 function handleEvent(msg) {
   const { kind, strategy, payload } = msg;
 
+  // Events for a strategy the server was started without are dropped.
+  if (strategy && strategy !== 'all' && !isEnabled(strategy)) return;
+
   if (kind === 'snapshot') {
     // Full state from server on connect
+    applyEnabledStrategies(payload.enabled_strategies);
     const st = payload.strategies || {};
     for (const [key, data] of Object.entries(st)) {
-      if (data.results?.length) {
+      if (!isEnabled(key)) continue;
+      if (Array.isArray(data.results)) {
+        // Server state is authoritative on (re)connect, including an empty
+        // list -- otherwise rows from a stale SSE session would linger.
         STATE[key].results = data.results;
+        if (key === 'put_selling') PS_SUMMARY = data.summary || null;
+        if (key === 'vol_momentum' && Array.isArray(data.excluded)) {
+          VM_EXCLUDED = data.excluded.slice();
+          VM_FILTERED_COUNT = VM_EXCLUDED.length;
+        }
         setBadge(key, data.status);
         if (key === 'vol_momentum') {
-          const nScored = data.results.filter(r => r.status === 'SCORED').length;
-          VM_FILTERED_COUNT = Math.max(0, (data.progress?.current || 0) - nScored);
+          const el = document.getElementById('vm-filtered');
+          if (el) el.textContent = VM_FILTERED_COUNT;
         }
         renderStrategy(key);
       }
@@ -1272,6 +1423,17 @@ function handleEvent(msg) {
     return;
   }
 
+  if (kind === 'strategy_refresh_started') {
+    setStratRefreshBusy(strategy, true);
+    setGlobalDetail(`Priority rescan: ${strategy} (background scan paused)`);
+    return;
+  }
+  if (kind === 'strategy_refresh_done') {
+    setStratRefreshBusy(strategy, false);
+    setGlobalDetail(`Priority rescan of ${strategy} ${payload.ok ? 'finished' : 'failed'} in ${payload.elapsed_sec}s — background scan resumed`);
+    return;
+  }
+
   if (kind === 'strategy_started') {
     setBadge(strategy, 'running');
     setGlobalDetail(`Running: ${payload.label}`);
@@ -1280,30 +1442,35 @@ function handleEvent(msg) {
 
   // ── ticker_result: full result payload — render row immediately ─────────────
   if (kind === 'ticker_result') {
-    // Background cycle: don't touch the visible table row-by-row. The
-    // previous cycle's rows (with their own as_of timestamps) stay put; this
-    // strategy's table is swapped in wholesale once strategy_done fires.
-    if (!CYCLE_IS_FRESH) return;
+    // Every cycle (fresh or background) updates the table ONE TICKER AT A
+    // TIME, in place: a signal for ticker X stays on screen exactly as it is
+    // until a new result for the SAME ticker arrives, at which point only that
+    // row is replaced. Rows are never appended blindly (that duplicated names
+    // across cycles) and never cleared at cycle start.
     if (strategy === 'vol_momentum') {
       const r = payload;
       if (r.status === 'SCORED') {
-        // Upsert by ticker (two-pass updates replace the original)
-        const idx = STATE.vol_momentum.results.findIndex(x => x.ticker === r.ticker);
-        if (idx >= 0) STATE.vol_momentum.results[idx] = r;
-        else          STATE.vol_momentum.results.push(r);
+        _upsertRow('vol_momentum', r);
         showSummaryFilters('vol_momentum');
         renderVM();
       }
     } else if (strategy === 'calendar') {
       const pairs = payload.pairs || [];
-      pairs.forEach(p => STATE.calendar.results.push(p));
       if (pairs.length > 0) {
+        // A ticker's calendar rows are keyed by (ticker, exp_short, exp_long).
+        // New pairs replace the old ones for the same expiry pair; pairs from
+        // this ticker that no longer qualify are dropped, because this event
+        // is the ticker's complete fresh result set.
+        const t = payload.ticker;
+        STATE.calendar.results = STATE.calendar.results.filter(x =>
+          x.ticker !== t ||
+          pairs.some(p => p.exp_short === x.exp_short && p.exp_long === x.exp_long));
+        pairs.forEach(p => _upsertRow('calendar', p));
         showSummaryFilters('calendar');
         renderCal();
       }
     } else if (strategy === 'earnings') {
-      const r = payload;
-      STATE.earnings.results.push(r);
+      _upsertRow('earnings', payload);
       showSummaryFilters('earnings');
       renderEarn();
     } else if (strategy === 'put_selling') {
@@ -1340,12 +1507,11 @@ function handleEvent(msg) {
     setProgress(strategy, p.current, p.total || 1);
     document.getElementById(`count-${strategy}`).textContent =
       p.total ? `${p.current} / ${p.total}` : '';
-    if (CYCLE_IS_FRESH && strategy === 'vol_momentum' && payload.status === 'FILTERED') {
-      VM_FILTERED_COUNT++;
-      VM_EXCLUDED.push({
-        ticker: payload.ticker || '—',
-        reason: payload.reason || 'Filtered',
-      });
+    if (strategy === 'vol_momentum' && payload.status === 'FILTERED') {
+      // Replace by ticker so the Excluded tile doesn't multiply each cycle.
+      const ex = { ticker: payload.ticker || '—', reason: payload.reason || 'Filtered' };
+      const ei = VM_EXCLUDED.findIndex(e => e.ticker === ex.ticker);
+      if (ei >= 0) VM_EXCLUDED[ei] = ex; else { VM_EXCLUDED.push(ex); VM_FILTERED_COUNT++; }
       const el = document.getElementById('vm-filtered');
       if (el) el.textContent = VM_FILTERED_COUNT;
       document.getElementById('summary-vol_momentum').style.display = '';
@@ -1365,7 +1531,23 @@ function handleEvent(msg) {
        that failed to price must disappear, not linger with stale numbers. */
     if (strategy === 'put_selling') {
       psSetPhase('');
+      /* An EMPTY final batch (typically Yahoo rate-limiting the chain fetches
+         after three strategies have already spent the request budget) must
+         NOT blank the table: the server deliberately keeps last cycle's rows
+         via _upsert_rows/_prune_stale, so pull those instead of wiping the
+         book to "Awaiting scan" every time a cycle comes back dry. */
+      if (payload && Array.isArray(payload.results) && payload.results.length === 0) {
+        setGlobalDetail('Put Selling: this cycle produced 0 candidates (check server log for rejection breakdown) — keeping previous rows');
+        _swapInLatestResults(strategy);
+        return;
+      }
+      if (payload && payload.fresh === 0) {
+        setGlobalDetail(`Put Selling: this cycle produced 0 new candidates — keeping ${payload.results.length} previous rows`);
+      }
       if (payload && Array.isArray(payload.results)) {
+        // payload.results is the server's MERGED book (fresh rows upserted
+        // over surviving older ones), so a wholesale replace is safe here.
+        // Any provisional (unweighted) rows are dropped by this replace.
         STATE.put_selling.results = payload.results;
         PS_SUMMARY = payload.summary || null;
         if (STATE.put_selling.results.length) showSummaryFilters('put_selling');
@@ -1377,31 +1559,28 @@ function handleEvent(msg) {
       // Fall through to the /results path if the payload arrived malformed.
     }
 
-    // Fetch latest results for this strategy. This is the atomic swap point:
-    // whatever was on screen for this strategy (last cycle's rows, complete
-    // with their own timestamps) is replaced now, all at once, with the
-    // freshly-completed pass — never mid-scan.
-    fetch('/results').then(r => r.json()).then(data => {
-      const st = data.strategies?.[strategy];
-      if (st?.results) {
-        STATE[strategy].results = st.results;
-        if (strategy === 'put_selling') PS_SUMMARY = st.summary || null;
-        if (strategy === 'vol_momentum') {
-          const nScored = st.results.filter(r => r.status === 'SCORED').length;
-          VM_FILTERED_COUNT = Math.max(0, (st.progress?.current || 0) - nScored);
-          if (Array.isArray(st.excluded)) VM_EXCLUDED = st.excluded.slice();
-          const filtEl = document.getElementById('vm-filtered');
-          if (filtEl) filtEl.textContent = VM_FILTERED_COUNT;
-        }
-        renderStrategy(strategy);
-      }
-    });
+    // This is the atomic swap point: whatever was on screen for this
+    // strategy (last cycle's rows, complete with their own timestamps) is
+    // replaced now, all at once, with the freshly-completed pass — never
+    // mid-scan.
+    _swapInLatestResults(strategy);
     return;
   }
 
   if (kind === 'strategy_error') {
     setBadge(strategy, 'error');
     setProgress(strategy, 1, 1, 'error');
+    // strategy_done never fires for this cycle when a strategy throws
+    // partway through — the server-side try block that would push it gets
+    // skipped straight to the except branch. Without this, whatever this
+    // strategy already upserted before the crash (e.g. one ticker
+    // succeeding before a later one throws) stays invisible indefinitely,
+    // possibly forever if the error recurs every cycle: the table would be
+    // stuck showing only the last cycle that fully succeeded, with no way
+    // to tell that from a strategy that's simply never found anything.
+    // Swap in whatever the server actually has right now, same as a clean
+    // finish would — a partial success is never worse than showing nothing.
+    _swapInLatestResults(strategy);
     return;
   }
 
@@ -1447,7 +1626,33 @@ function handleEvent(msg) {
 }
 
 /* ── UI helpers ─────────────────────────────────────────────────────── */
+// Strategies the server was started with (--strategies / STRATEGIES env).
+// Sections of disabled strategies are removed from the page; events for them
+// are ignored so a stray status update can never resurrect a hidden section.
+let ENABLED_STRATEGIES = null;   // null = not yet known -> treat all as enabled
+function isEnabled(key) { return !ENABLED_STRATEGIES || ENABLED_STRATEGIES.includes(key); }
+function applyEnabledStrategies(list) {
+  if (!Array.isArray(list) || !list.length) return;
+  ENABLED_STRATEGIES = list;
+  for (const key of ['vol_momentum', 'calendar', 'earnings', 'put_selling']) {
+    const sec = document.getElementById(`sec-${key}`);
+    if (sec) sec.style.display = isEnabled(key) ? '' : 'none';
+  }
+  if (list.length < 4) {
+    const n = list.length;
+    const el = document.getElementById('globalStatus');
+    if (el && !document.getElementById('enabledNote')) {
+      const note = document.createElement('span');
+      note.id = 'enabledNote';
+      note.style.cssText = 'margin-left:10px;font-size:11px;color:var(--dim)';
+      note.textContent = `· ${n} of 4 strategies enabled`;
+      el.insertAdjacentElement('afterend', note);
+    }
+  }
+}
+
 function setBadge(key, status) {
+  if (!isEnabled(key) || status === 'disabled') return;
   const el = document.getElementById(`badge-${key}`);
   el.className = `strategy-badge badge-${status}`;
   const labels = {idle:'Idle', running:'Running', done:'Done', error:'Error'};
@@ -1622,16 +1827,9 @@ function renderVM() {
     const barPct = Math.round(Math.min(100, Math.max(0, score)));
     const cls    = conclusionClass[r.conclusion] || 'verdict-error';
     const conLabel = r.conclusion === 'BUY SPREAD' ? '▲ BUY' : r.conclusion === 'CONSIDER' ? '◆ CON' : '▼ AVD';
-    const enc = encodeURIComponent(JSON.stringify({_type:'vm', ticker:r.ticker, direction:r.direction,
-      spot:r.spot, long_strike:r.long_strike, short_strike:r.short_strike,
-      long_delta:r.long_delta, short_delta:r.short_delta,
-      atm_iv:r.atm_iv, otm_iv:r.otm_iv, dte:r.dte, expiry:r.expiry,
-      conclusion:r.conclusion, composite:r.composite,
-      long_bid:r.long_bid, long_ask:r.long_ask, long_mid:r.long_mid,
-      short_bid:r.short_bid, short_ask:r.short_ask, short_mid:r.short_mid,
-      avg_vol_30d:r.avg_vol_30d, leg_spread_max:r.leg_spread_max}));
+    const enc = encodeURIComponent(JSON.stringify(payoffDataFromRow('vm', r)));
     return `<tr class="clickable-row" onclick='openPayoff(JSON.parse(decodeURIComponent("${enc}")))'>
-      <td class="td-ticker">${r.ticker}</td>
+      <td class="td-ticker">${r.ticker}${parityBadge(r.parity)}</td>
       <td>
         <div class="score-wrap">
           <div class="score-bar-bg"><div class="score-bar-fill" style="width:${barPct}%"></div></div>
@@ -1741,15 +1939,9 @@ function renderCal() {
 
   const html = rows.map(r => {
     const ffPct = Math.min(100, Math.max(0, ((r.ff ?? 0) / 100) * 100));
-    const enc = encodeURIComponent(JSON.stringify({_type:'cal', ticker:r.ticker,
-      spot:r.spot, strike:r.strike_short ?? r.strike_long,
-      iv_short:r.iv_short, iv_long:r.iv_long, forward_iv:r.forward_iv,
-      ff:r.ff, dte_short:r.dte_short, dte_long:r.dte_long,
-      exp_short:r.exp_short, exp_long:r.exp_long, gap_days:r.gap_days, bucket:r.bucket,
-      short_bid:r.short_bid, short_ask:r.short_ask, short_mid:r.short_mid,
-      long_bid:r.long_bid,   long_ask:r.long_ask,   long_mid:r.long_mid}));
+    const enc = encodeURIComponent(JSON.stringify(payoffDataFromRow('cal', r)));
     return `<tr class="clickable-row" onclick='openPayoff(JSON.parse(decodeURIComponent("${enc}")))'>
-      <td class="td-ticker">${r.ticker}</td>
+      <td class="td-ticker">${r.ticker}${parityBadge(r.parity)}</td>
       <td>
         <div class="score-wrap">
           <div class="score-bar-bg">
@@ -1872,19 +2064,7 @@ function renderEarn() {
     }
     const vcls = verdictCls[r.verdict] || 'verdict-error';
     const vLabel = r.verdict === 'Recommended' ? '▲ REC' : r.verdict === 'Consider' ? '◆ CON' : '▼ AVD';
-    const enc = encodeURIComponent(JSON.stringify({_type:'earn', ticker:r.ticker,
-      company:r.company, verdict:r.verdict, earnings_date:r.earnings_date,
-      expected_move:r.expected_move, iv30_rv30_val:r.iv30_rv30_val,
-      ts_slope_val:r.ts_slope_val, iv30_rv30:r.iv30_rv30, ts_slope:r.ts_slope,
-      avg_vol_m:r.avg_vol_m, avg_volume:r.avg_volume,
-      call_bid:r.call_bid, call_ask:r.call_ask, call_mid:r.call_mid,
-      put_bid:r.put_bid,   put_ask:r.put_ask,   put_mid:r.put_mid,
-      straddle_mid:r.straddle_mid,
-      // spot/strike/atm_iv_used are what put the payoff chart on a real price
-      // axis. Omitting them here silently forced _payoffEarn's $100-normalized
-      // fallback on EVERY row, because that fallback triggers on absence and
-      // absence was guaranteed by this whitelist -- not by missing backend data.
-      spot:r.spot, strike:r.strike, atm_iv_used:r.atm_iv_used}));
+    const enc = encodeURIComponent(JSON.stringify(payoffDataFromRow('earn', r)));
     return `<tr class="clickable-row" onclick='openPayoff(JSON.parse(decodeURIComponent("${enc}")))'>
       <td class="td-ticker">${r.ticker}</td>
       <td class="td-dim" title="${r.company||''}">${(r.company||'').substring(0,22)}</td>
@@ -2049,12 +2229,7 @@ function renderPS() {
       ? ' <span class="earn-warn" title="Selected strike missed the mode target">&#9651;</span>'
       : '';
 
-    const enc = encodeURIComponent(JSON.stringify({_type:'ps', ticker:r.ticker,
-      spot:r.spot, strike:r.strike, premium:r.premium, dte:r.dte, expiry:r.expiry,
-      iv:r.iv, abs_delta:r.abs_delta, assign_prob:r.assign_prob,
-      bid:r.bid, ask:r.ask, collateral:r.collateral, prem_pct:r.prem_pct,
-      fcf_yield:r.fcf_yield, contracts_per_100k:r.contracts_per_100k,
-      weight_pct:r.weight_pct}));
+    const enc = encodeURIComponent(JSON.stringify(payoffDataFromRow('ps', r)));
 
     return `<tr class="clickable-row" style="${prov ? 'opacity:.45' : ''}" onclick='openPayoff(JSON.parse(decodeURIComponent("${enc}")))'>
       <td class="td-ticker">${r.ticker || '—'}${flag}</td>
@@ -2087,8 +2262,10 @@ window.addEventListener('DOMContentLoaded', () => {
   setGlobalStatus('idle', 'Ready', 'Reaching server…');
 
   fetch('/results').then(r => r.json()).then(data => {
+    applyEnabledStrategies(data.enabled_strategies);
     const st = data.strategies || {};
     for (const [key, s] of Object.entries(st)) {
+      if (!isEnabled(key)) continue;
       if (s.results?.length) {
         STATE[key].results = s.results;
         if (key === 'vol_momentum') {
@@ -2148,10 +2325,213 @@ window.addEventListener('DOMContentLoaded', () => {
    PAYOFF DIAGRAM ENGINE
    ══════════════════════════════════════════════════════════════════════ */
 
+// The signal currently shown in the modal and which version of it (the
+// scanner's original or its put-call-parity twin) is on screen.
+let PAYOFF_CUR  = null;
+let PAYOFF_VIEW = 'original';
+
+/* The fields the payoff modal reads, per strategy. One whitelist, used both
+   by the table rows and by the ⟳ Refresh button, so a refreshed signal is
+   drawn from exactly the same fields as a clicked one. */
+function payoffDataFromRow(type, r) {
+  if (type === 'vm') return {_type:'vm', ticker:r.ticker, direction:r.direction,
+      spot:r.spot, long_strike:r.long_strike, short_strike:r.short_strike,
+      long_delta:r.long_delta, short_delta:r.short_delta,
+      atm_iv:r.atm_iv, otm_iv:r.otm_iv, dte:r.dte, expiry:r.expiry,
+      conclusion:r.conclusion, composite:r.composite,
+      long_bid:r.long_bid, long_ask:r.long_ask, long_mid:r.long_mid,
+      short_bid:r.short_bid, short_ask:r.short_ask, short_mid:r.short_mid,
+      avg_vol_30d:r.avg_vol_30d, leg_spread_max:r.leg_spread_max, parity:r.parity,
+      as_of:r.as_of};
+  if (type === 'cal') return {_type:'cal', ticker:r.ticker,
+      spot:r.spot, strike:r.strike_short ?? r.strike_long,
+      iv_short:r.iv_short, iv_long:r.iv_long, forward_iv:r.forward_iv,
+      ff:r.ff, dte_short:r.dte_short, dte_long:r.dte_long,
+      exp_short:r.exp_short, exp_long:r.exp_long, gap_days:r.gap_days, bucket:r.bucket,
+      short_bid:r.short_bid, short_ask:r.short_ask, short_mid:r.short_mid,
+      long_bid:r.long_bid,   long_ask:r.long_ask,   long_mid:r.long_mid, parity:r.parity,
+      as_of:r.as_of};
+  if (type === 'earn') return {_type:'earn', ticker:r.ticker,
+      company:r.company, verdict:r.verdict, earnings_date:r.earnings_date,
+      expected_move:r.expected_move, iv30_rv30_val:r.iv30_rv30_val,
+      ts_slope_val:r.ts_slope_val, iv30_rv30:r.iv30_rv30, ts_slope:r.ts_slope,
+      avg_vol_m:r.avg_vol_m, avg_volume:r.avg_volume,
+      call_bid:r.call_bid, call_ask:r.call_ask, call_mid:r.call_mid,
+      put_bid:r.put_bid,   put_ask:r.put_ask,   put_mid:r.put_mid,
+      straddle_mid:r.straddle_mid,
+      // spot/strike/atm_iv_used put the payoff chart on a real price axis;
+      // without them _payoffEarn falls back to a $100-normalized axis.
+      spot:r.spot, strike:r.strike, atm_iv_used:r.atm_iv_used, as_of:r.as_of};
+  if (type === 'ps') return {_type:'ps', ticker:r.ticker,
+      spot:r.spot, strike:r.strike, premium:r.premium, dte:r.dte, expiry:r.expiry,
+      iv:r.iv, abs_delta:r.abs_delta, assign_prob:r.assign_prob,
+      bid:r.bid, ask:r.ask, collateral:r.collateral, prem_pct:r.prem_pct,
+      fcf_yield:r.fcf_yield, contracts_per_100k:r.contracts_per_100k,
+      weight_pct:r.weight_pct, as_of:r.as_of};
+  return r;
+}
+
+const _PAYOFF_STRAT = {vm:'vol_momentum', cal:'calendar', earn:'earnings', ps:'put_selling'};
+let _REFRESHING = false;
+
+function _setRefreshInfo(text, cls) {
+  const el = document.getElementById('payoffRefreshInfo');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'payoff-refresh-info' + (cls ? ' ' + cls : '');
+}
+
+function _refreshInfoAge(d) {
+  if (!d || !d.as_of) { _setRefreshInfo(''); return; }
+  const s = Math.max(0, Math.round((Date.now() - new Date(d.as_of).getTime()) / 1000));
+  const age = s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s/60)}m` : `${(s/3600).toFixed(1)}h`;
+  _setRefreshInfo(`data ${age} old`);
+}
+
+async function refreshSignal() {
+  const d = PAYOFF_CUR;
+  if (!d || _REFRESHING) return;
+  const strategy = _PAYOFF_STRAT[d._type];
+  if (!strategy) return;
+  const btn = document.getElementById('payoffRefreshBtn');
+  _REFRESHING = true;
+  btn.disabled = true;
+  btn.textContent = '⟳ REFRESHING…';
+  _setRefreshInfo('scan paused, fetching live quotes…', 'busy');
+  try {
+    const res = await fetch('/refresh_signal', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({strategy, ticker: d.ticker,
+                            exp_short: d.exp_short, exp_long: d.exp_long})});
+    const out = await res.json();
+    // The modal may have been closed or switched to another signal meanwhile.
+    const stillOpen = PAYOFF_CUR === d &&
+      document.getElementById('payoffModal').classList.contains('open');
+
+    // Update the table even when the open row itself didn't survive.
+    if (strategy === 'calendar' && out.pairs) {
+      STATE.calendar.results = STATE.calendar.results.filter(x =>
+        x.ticker !== d.ticker ||
+        out.pairs.some(p => p.exp_short === x.exp_short && p.exp_long === x.exp_long));
+      out.pairs.forEach(p => _upsertRow('calendar', p));
+    } else if (strategy === 'put_selling' && out.results) {
+      STATE.put_selling.results = out.results;
+      PS_SUMMARY = out.summary || PS_SUMMARY;
+    } else if (out.ok && out.row) {
+      _upsertRow(strategy, out.row);
+    }
+    renderStrategy(strategy);
+
+    if (!stillOpen) return;
+    if (out.ok && out.row) {
+      const nd = payoffDataFromRow(d._type, out.row);
+      PAYOFF_CUR = nd;
+      _renderParityBar(nd);
+      _buildPayoff(nd);
+      _setRefreshInfo(`refreshed just now (${out.elapsed_sec}s)`, 'ok');
+    } else {
+      _setRefreshInfo(`refresh: ${out.reason || 'failed'}. Showing previous data.`, 'warn');
+    }
+  } catch (e) {
+    _setRefreshInfo('refresh failed: ' + e, 'warn');
+  } finally {
+    _REFRESHING = false;
+    btn.disabled = false;
+    btn.textContent = '⟳ REFRESH';
+  }
+}
+
 function openPayoff(d) {
   document.getElementById('payoffModal').classList.add('open');
   document.body.style.overflow = 'hidden';
+  PAYOFF_CUR  = d;
+  PAYOFF_VIEW = 'original';
+  _refreshInfoAge(d);
+  _renderParityBar(d);
   _buildPayoff(d);
+}
+
+function togglePayoffView() {
+  if (!PAYOFF_CUR) return;
+  PAYOFF_VIEW = PAYOFF_VIEW === 'original' ? 'twin' : 'original';
+  _renderParityBar(PAYOFF_CUR);
+  _buildPayoff(PAYOFF_CUR);
+}
+
+/* Small badge after the ticker in the table: tells you BEFORE opening the
+   row that the parity-equivalent execution has tighter quotes. */
+function parityBadge(p) {
+  if (!p || !p.available) return '';
+  if (p.twin_better) {
+    const sav = (p.savings * 100).toFixed(0);
+    const t   = p.twin.type === 'PUT' ? 'puts' : 'calls';
+    return ` <span class="parity-badge" title="Put-call-parity twin (${t}) saves ~$${sav}/contract of bid-ask slippage — open the row and click 'Show parity version'">⇄ −$${sav}</span>`;
+  }
+  if (p.parity_stale) {
+    return ` <span class="parity-badge parity-badge-warn" title="Put-call parity gap $${p.parity_gap} exceeds the bid/ask width — one of the quotes may be stale">⚠</span>`;
+  }
+  return '';
+}
+
+function _fmtLegShort(l) {
+  return `${l.side === 'LONG' ? 'Buy' : 'Sell'} ${l.strike} ${l.type[0]}${l.expiry ? ' ' + l.expiry.slice(5) : ''}`;
+}
+
+function _renderParityBar(d) {
+  const bar = document.getElementById('parityBar');
+  const p   = d && d.parity;
+  if (!p || (d._type !== 'vm' && d._type !== 'cal')) { bar.style.display = 'none'; return; }
+  bar.style.display = '';
+
+  if (!p.available) {
+    bar.className = 'parity-bar parity-bar-muted';
+    bar.innerHTML = `<span>Parity-equivalent not available${p.reason ? ' — ' + p.reason : ''}.</span>`;
+    return;
+  }
+  const o = p.original, t = p.twin;
+  const fmt$ = v => '$' + (v * 100).toFixed(0);
+  const showingTwin = PAYOFF_VIEW === 'twin';
+  const better = p.twin_better;
+  const worse  = p.savings != null && p.savings < -0.01;
+
+  let verdict;
+  if (better)      verdict = `<b style="color:var(--green)">Parity version is cheaper to execute: saves ${fmt$(p.savings)}/contract (${p.savings_pct}% less slippage).</b>`;
+  else if (worse)  verdict = `<span style="color:var(--dim)">Scanner's version is already the cheaper one (twin costs ${fmt$(-p.savings)}/contract more).</span>`;
+  else             verdict = `<span style="color:var(--dim)">Both versions cost about the same to execute.</span>`;
+
+  const row = (lbl, s, active) =>
+    `<div class="parity-row ${active ? 'parity-row-active' : ''}">
+       <span class="parity-row-lbl">${lbl}</span>
+       <span class="parity-row-legs">${s.legs.map(_fmtLegShort).join(' · ')}</span>
+       <span class="parity-row-num">slippage ${fmt$(s.slippage)}/ct${s.slippage_pct != null ? ' (' + s.slippage_pct + '% of mid)' : ''}</span>
+       <span class="parity-row-num">net mid ${s.net_mid >= 0 ? 'debit' : 'credit'} ${fmt$(Math.abs(s.net_mid))}</span>
+       <span class="parity-row-num">min OI ${s.min_oi ?? '—'}</span>
+     </div>`;
+
+  const warns = (p.warnings || []).map(w => `<div class="parity-warn">⚠ ${w}</div>`).join('');
+
+  bar.className = 'parity-bar' + (better ? ' parity-bar-good' : '');
+  bar.innerHTML = `
+    <div class="parity-head">
+      <span>${verdict}</span>
+      <button class="parity-btn" onclick="togglePayoffView()">${showingTwin ? '← Show scanner version (' + o.type.toLowerCase() + 's)' : 'Show parity version (' + t.type.toLowerCase() + 's) →'}</button>
+    </div>
+    ${row('Scanner (' + o.type.toLowerCase() + 's)', o, !showingTwin)}
+    ${row('Parity twin (' + t.type.toLowerCase() + 's)', t, showingTwin)}
+    ${p.parity_gap != null ? `<div class="parity-gap ${p.parity_stale ? 'parity-warn' : ''}">Put-call parity check at ${o.legs[0].strike}: gap $${p.parity_gap}/share${p.parity_stale ? ' — wider than bid/ask, one quote may be stale' : ' — quotes consistent'}</div>` : ''}
+    ${warns}`;
+}
+
+/* Returns the signal with its quotes/type swapped to the parity twin, so the
+   existing payoff builders draw the twin without special cases. */
+function _twinSignal(d) {
+  const p = d.parity; if (!p || !p.available) return d;
+  const t = p.twin;
+  const L = t.legs.find(l => l.side === 'LONG');
+  const S = t.legs.find(l => l.side === 'SHORT');
+  return { ...d, _isTwin: true, _twinType: t.type,
+    long_bid: L.bid, long_ask: L.ask, long_mid: L.mid,
+    short_bid: S.bid, short_ask: S.ask, short_mid: S.mid };
 }
 function closePayoff() {
   document.getElementById('payoffModal').classList.remove('open');
@@ -2161,6 +2541,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closePayoff(
 
 /* ── Dispatch by strategy type ─────────────────────────────────────── */
 function _buildPayoff(d) {
+  if (PAYOFF_VIEW === 'twin' && d.parity && d.parity.available) d = _twinSignal(d);
   if (d._type === 'vm')   _payoffVM(d);
   if (d._type === 'cal')  _payoffCal(d);
   if (d._type === 'earn') _payoffEarn(d);
@@ -2272,8 +2653,27 @@ function _payoffVM(d) {
   // A vertical debit can never exceed the strike width (arbitrage bound).
   debit = Math.min(Math.max(0.01, debit), Math.max(0.02, width - 0.01));
 
-  const maxProfit = width - debit;   // long strike ITM, short strike capped
-  const maxLoss   = -debit;          // both legs expire worthless
+  /* Parity twin: same strikes, same long/short sides, opposite option
+     type. A bull CALL debit spread becomes a bull PUT credit spread (long
+     K1 put / short K2 put); a bear PUT debit becomes a bear CALL credit.
+     Net = credit received = short mid/bid - long mid/ask. Payoff at
+     expiry equals the original's up to the carry on the width, so
+     max profit = credit, max loss = width - credit. */
+  const isTwin  = !!d._isTwin;
+  let credit = null;
+  if (isTwin) {
+    const credNat = (sBid != null && lAsk != null) ? (sBid - lAsk) : null;
+    const credMid = (sMid != null && lMid != null) ? (sMid - lMid) : null;
+    if (credNat != null && credNat > 0)      { credit = credNat; basis = 'natural — sell bid / buy ask'; }
+    else if (credMid != null && credMid > 0) { credit = credMid; basis = 'mid'; }
+    else                                     { credit = width - debit; basis = 'parity estimate'; }
+    credit = Math.min(Math.max(0.01, credit), Math.max(0.02, width - 0.01));
+  }
+  // Twin option type is the opposite of the scanner's direction.
+  const twinIsCall = isTwin ? !isCall : isCall;
+
+  const maxProfit = isTwin ? credit : width - debit;
+  const maxLoss   = isTwin ? -(width - credit) : -debit;
 
   /* Build payoff curve at expiry.  Window must ALWAYS contain both
      strikes plus padding — a fixed ±12% band around spot clips the flat
@@ -2285,7 +2685,11 @@ function _payoffVM(d) {
   const pts  = [];
   for (let x = xMin; x <= xMax; x += (xMax - xMin) / 300) {
     let pnl;
-    if (isCall) {
+    if (isTwin) {
+      // long lk / short sk in the opposite type, plus the credit
+      if (twinIsCall) pnl = (Math.max(0, x - lk) - Math.max(0, x - sk) + credit) * 100;
+      else            pnl = (Math.max(0, lk - x) - Math.max(0, sk - x) + credit) * 100;
+    } else if (isCall) {
       pnl = (Math.max(0, x - lk) - Math.max(0, x - sk) - debit) * 100;
     } else {
       pnl = (Math.max(0, lk - x) - Math.max(0, sk - x) - debit) * 100;
@@ -2293,9 +2697,17 @@ function _payoffVM(d) {
     pts.push([x, pnl]);
   }
 
-  const be = isCall ? lk + debit : lk - debit;
-  const spreadType = isCall ? 'Bull Call Spread' : 'Bear Put Spread';
+  // Breakeven: original = long strike +/- debit; twin credit spread =
+  // short strike -/+ credit (bull put: sk - credit; bear call: sk + credit).
+  const be = isTwin ? (isCall ? sk - credit : sk + credit)
+                    : (isCall ? lk + debit  : lk - debit);
+  const spreadType = isTwin
+    ? (isCall ? 'Bull Put Spread (parity twin)' : 'Bear Call Spread (parity twin)')
+    : (isCall ? 'Bull Call Spread' : 'Bear Put Spread');
   const color      = isCall ? '#00e896' : '#f04860';
+  const legWord    = twinIsCall ? 'call' : 'put';
+  const netAmt     = isTwin ? credit : debit;
+  const netLbl     = isTwin ? 'Net Credit' : 'Net Debit';
 
   // Format bid/ask display strings
   const fba = (bid, ask, mid) => {
@@ -2310,14 +2722,14 @@ function _payoffVM(d) {
     sub:   `Expiry: ${d.expiry||'—'}  ·  DTE: ${d.dte||'—'}  ·  Score: ${(d.composite||0).toFixed(1)}`,
     meta: [
       { lbl:'Spot',         val:'$'+spot.toFixed(2) },
-      { lbl:'Long Leg',     val:`$${lk.toFixed(2)}  ${(dLong*100).toFixed(0)}Δ  IV ${((d.atm_iv||0)*100).toFixed(1)}%`, col:'var(--green)' },
+      { lbl:`Long ${legWord}`,  val: isTwin ? `$${lk.toFixed(2)}` : `$${lk.toFixed(2)}  ${(dLong*100).toFixed(0)}Δ  IV ${((d.atm_iv||0)*100).toFixed(1)}%`, col:'var(--green)' },
       { lbl:'  Bid / Ask',  val: fba(lBid, lAsk, lMid), col:'var(--dim)' },
-      { lbl:'Short Leg',    val:`$${sk.toFixed(2)}  ${(dShort*100).toFixed(0)}Δ  IV ${((d.otm_iv||0)*100).toFixed(1)}%`, col:'var(--red)' },
+      { lbl:`Short ${legWord}`, val: isTwin ? `$${sk.toFixed(2)}` : `$${sk.toFixed(2)}  ${(dShort*100).toFixed(0)}Δ  IV ${((d.otm_iv||0)*100).toFixed(1)}%`, col:'var(--red)' },
       { lbl:'  Bid / Ask',  val: fba(sBid, sAsk, sMid), col:'var(--dim)' },
-      { lbl:'Net Debit',    val:'$'+(debit*100).toFixed(0)+'/contract  ('+basis+')', col:'var(--yellow)' },
+      { lbl:netLbl,         val:'$'+(netAmt*100).toFixed(0)+'/contract  ('+basis+')', col:'var(--yellow)' },
       { lbl:'Strike Width', val:'$'+width.toFixed(2)+'  (risk $'+(width*100).toFixed(0)+'/contract)', col:'var(--dim)' },
       { lbl:'Max Profit',   val:'+$'+(maxProfit*100).toFixed(0)+'/contract', col:'var(--green)' },
-      { lbl:'Max Loss',     val:'-$'+(debit*100).toFixed(0)+'/contract',     col:'var(--red)' },
+      { lbl:'Max Loss',     val:'-$'+(Math.abs(maxLoss)*100).toFixed(0)+'/contract',     col:'var(--red)' },
       { lbl:'Breakeven',    val:'$'+be.toFixed(2) },
     ],
     lines: [{
@@ -2330,7 +2742,9 @@ function _payoffVM(d) {
     }],
     spot, xMin, xMax,
     legend:[{ col:color, lbl:`${spreadType} P&L at expiry (per contract)` }],
-    note:`${spreadType} — buy the ${isCall?'lower':'higher'} strike ${isCall?'call':'put'} (~50Δ) at $${lk.toFixed(2)} and sell the ${isCall?'higher':'lower'} strike ${isCall?'call':'put'} (~15Δ) at $${sk.toFixed(2)}. Net debit: $${(debit*100).toFixed(0)}/contract${lMid!=null?' (from live bid/ask mid at scan time)':' (IV estimate)'}. Max profit $${(maxProfit*100).toFixed(0)} if stock is ${isCall?'above':'below'} $${sk.toFixed(2)} at expiry. Max loss $${(debit*100).toFixed(0)} if stock finishes ${isCall?'below':'above'} $${lk.toFixed(2)}. Breakeven at $${be.toFixed(2)}.`,
+    note: isTwin
+      ? `${spreadType} — the put-call-parity equivalent of the scanner's ${isCall?'bull call':'bear put'} spread: buy the $${lk.toFixed(2)} ${legWord} and sell the $${sk.toFixed(2)} ${legWord}, same expiry. Identical payoff at expiry (up to interest carry on the $${width.toFixed(2)} width); you receive a credit of $${(credit*100).toFixed(0)}/contract instead of paying a debit. Max profit $${(maxProfit*100).toFixed(0)} if stock is ${isCall?'above':'below'} $${sk.toFixed(2)} at expiry; max loss $${(Math.abs(maxLoss)*100).toFixed(0)} if it finishes ${isCall?'below':'above'} $${lk.toFixed(2)}. Breakeven $${be.toFixed(2)}. Buying power held = width − credit.`
+      : `${spreadType} — buy the ${isCall?'lower':'higher'} strike ${isCall?'call':'put'} (~50Δ) at $${lk.toFixed(2)} and sell the ${isCall?'higher':'lower'} strike ${isCall?'call':'put'} (~15Δ) at $${sk.toFixed(2)}. Net debit: $${(debit*100).toFixed(0)}/contract${lMid!=null?' (from live bid/ask mid at scan time)':' (IV estimate)'}. Max profit $${(maxProfit*100).toFixed(0)} if stock is ${isCall?'above':'below'} $${sk.toFixed(2)} at expiry. Max loss $${(debit*100).toFixed(0)} if stock finishes ${isCall?'below':'above'} $${lk.toFixed(2)}. Breakeven at $${be.toFixed(2)}.`,
   });
 }
 
@@ -2367,6 +2781,16 @@ function _payoffCal(d) {
     const d2 = d1 - sigma * sq;
     return S * N(d1) - K * N(d2);
   }
+  // Put via parity with r=0: P = C - S + K.
+  function bsPut(S, K, sigma, T) {
+    if (T <= 0 || sigma <= 0 || S <= 0) return Math.max(0, K - S);
+    return bsCall(S, K, sigma, T) - S + K;
+  }
+  // Parity twin = PUT calendar at the same strike (same debit structure:
+  // sell front put, buy back put). Only the leg pricer changes.
+  const isTwin = !!d._isTwin;
+  const leg    = isTwin ? bsPut : bsCall;
+  const legWord = isTwin ? 'put' : 'call';
 
   // ── Entry prices ─────────────────────────────────────────────────────────
   /* The debit MUST be anchored to live quotes when they exist. Pricing
@@ -2380,8 +2804,8 @@ function _payoffCal(d) {
   const calMid = (d.long_mid != null && d.short_mid != null)
                ? d.long_mid - d.short_mid : null;
 
-  const priceShort = bsCall(spot, strike, ivS, dteS / 365);
-  const priceLong  = bsCall(spot, strike, ivL, dteL / 365);
+  const priceShort = leg(spot, strike, ivS, dteS / 365);
+  const priceLong  = leg(spot, strike, ivL, dteL / 365);
 
   let netDebit, calBasis;
   if (calNat != null && calNat > 0) {
@@ -2439,9 +2863,9 @@ function _payoffCal(d) {
      scenario rather than silently used as the headline curve. */
   for (let i = 0; i <= 300; i++) {
     const x        = xMin + (xMax - xMin) * i / 300;
-    const shortPnl = -Math.max(0, x - strike);
-    pts .push([x, (shortPnl + bsCall(x, strike, ivL,   remainT) - netDebit) * 100]);
-    ptsF.push([x, (shortPnl + bsCall(x, strike, fwdIV, remainT) - netDebit) * 100]);
+    const shortPnl = isTwin ? -Math.max(0, strike - x) : -Math.max(0, x - strike);
+    pts .push([x, (shortPnl + leg(x, strike, ivL,   remainT) - netDebit) * 100]);
+    ptsF.push([x, (shortPnl + leg(x, strike, fwdIV, remainT) - netDebit) * 100]);
   }
 
   // ── Breakevens ────────────────────────────────────────────────────────────
@@ -2478,7 +2902,7 @@ function _payoffCal(d) {
   };
 
   _drawChart({
-    title: `${d.ticker} — Calendar Spread (Call)`,
+    title: `${d.ticker} — Calendar Spread (${isTwin ? 'Put — parity twin' : 'Call'})`,
     sub:   `Sell ${d.exp_short||'—'} (${dteS}d) · Buy ${d.exp_long||'—'} (${dteL}d) · Same ATM strike`,
     meta: [
       { lbl:'Spot',           val:'$'+spot.toFixed(2) },
@@ -2506,7 +2930,7 @@ function _payoffCal(d) {
       { col:'#9060f0', lbl:'P&L at short expiry \u2014 back-month IV held at '+(ivL*100).toFixed(1)+'% (IB convention)' },
       { col:'#5a7080', lbl:'Scenario \u2014 back-month IV decays to forward '+(fwdIV*100).toFixed(1)+'%' },
     ],
-    note:`Calendar spread: sell the ${dteS}-DTE call and buy the ${dteL}-DTE call at the same ATM strike ($${strike.toFixed(2)}). Max loss: $${Math.abs(maxLoss).toFixed(0)}/contract (net debit). Max profit: ~$${maxProfit.toFixed(0)}/contract near ATM at short expiry. Forward Factor ${(d.ff||0).toFixed(1)}% — front IV ${(ivS*100).toFixed(1)}% elevated vs implied forward ${(fwdIV*100).toFixed(1)}%. Wings show real losses: short call goes deep ITM faster than back-month gains. P&L is approximate — actual outcome depends on realized IV of back-month at front expiry.`,
+    note:`${isTwin ? 'Put-call-parity twin of the scanner\'s call calendar — same strike, same expiries, same payoff shape (differs only by carry on the strike and any dividend between the two expiries). ' : ''}Calendar spread: sell the ${dteS}-DTE ${legWord} and buy the ${dteL}-DTE ${legWord} at the same ATM strike ($${strike.toFixed(2)}). Max loss: $${Math.abs(maxLoss).toFixed(0)}/contract (net debit). Max profit: ~$${maxProfit.toFixed(0)}/contract near ATM at short expiry. Forward Factor ${(d.ff||0).toFixed(1)}% — front IV ${(ivS*100).toFixed(1)}% elevated vs implied forward ${(fwdIV*100).toFixed(1)}%. Wings show real losses: short call goes deep ITM faster than back-month gains. P&L is approximate — actual outcome depends on realized IV of back-month at front expiry.`,
   });
 }
 /* ─────────────────────────────────────────────────────────────────────

@@ -22,6 +22,8 @@ from scipy.stats import norm as scipy_norm
 from option_pricing import implied_vol, mid_price, get_risk_free_rate, get_dividend_yield
 
 import data_provider
+import parity
+import scan_control
 
 try:
     import yfinance as yf
@@ -44,10 +46,22 @@ WEIGHT_F4 = 0.10
 
 DTE_MIN                = 5
 DTE_MAX                = 15
+# How many expiries inside [DTE_MIN, DTE_MAX] to screen per ticker, nearest
+# the window midpoint first. 0 = all of them (default). Each extra expiry is
+# one more chain fetch, so cap it (env VM_MAX_EXPIRIES) if the cycle is slow.
+try:
+    import os as _os
+    VM_MAX_EXPIRIES = max(0, int(_os.environ.get("VM_MAX_EXPIRIES", "0")))
+except ValueError:
+    VM_MAX_EXPIRIES = 0
 LONG_DELTA_LO          = 0.45
 LONG_DELTA_HI          = 0.55
 SHORT_DELTA_LO         = 0.10
 SHORT_DELTA_HI         = 0.25
+# Skew is MEASURED at the 25-delta wing (video definition:
+# (ATM IV - 25d IV) / ATM IV), independent of which strike is sold.
+SKEW_DELTA_LO          = 0.20
+SKEW_DELTA_HI          = 0.30
 EARNINGS_BLACKOUT_DAYS = 15
 
 MIN_AVG_VOLUME     = 1_500_000   # shares/day (30-day avg stock volume)
@@ -115,6 +129,9 @@ class BenchmarkData:
 def fetch_benchmarks() -> BenchmarkData:
     bd = BenchmarkData()
     try:
+        # threads=True is safe -- see the note in data_provider.download()'s
+        # docstring and strategy_calendar.py's call site: this no longer
+        # goes through yfinance's own (leaky) internal batch-threading.
         raw = data_provider.download(
             BENCHMARK_SYMBOLS, period="1y", auto_adjust=True,
             progress=False, threads=True,
@@ -276,10 +293,18 @@ def score_f2_direction(f2: float, direction: str) -> float:
         return _clamp(f2)
     return _clamp(100.0 - f2)
 
-def score_f3_vrp(vrp: float) -> float:
-    if vrp <= 0.0:
-        return 100.0
-    return _clamp(100.0 * (1.0 - vrp / 0.05))
+def score_f3_vrp(vrp: float, wing_vrp: Optional[float] = None) -> float:
+    """
+    Video's ideal setup has TWO conditions:
+      1. RV >= ATM IV        (the long leg is cheap)      -> vrp = ATM IV - RV <= 0
+      2. RV <  short-leg IV  (the sold wing is expensive) -> wing_vrp = OTM IV - RV > 0
+    Each half scores 0-100; f3 is their average.
+    """
+    atm_part = 100.0 if vrp <= 0.0 else _clamp(100.0 * (1.0 - vrp / 0.05))
+    if wing_vrp is None:
+        return atm_part
+    wing_part = _clamp(wing_vrp / 0.10 * 100.0)   # +10 vol pts over RV = full score
+    return 0.5 * atm_part + 0.5 * wing_part
 
 def score_f4_skew_z(skew_z: float) -> float:
     return _clamp(50.0 - 25.0 * skew_z)
@@ -386,10 +411,22 @@ def days_to_earnings(ticker_obj, today: datetime.date) -> Optional[int]:
     return days
 
 def pick_best_expiry(ticker_obj, today: datetime.date):
-    try:
-        expirations = ticker_obj.options
-    except Exception:
-        return None, None
+    """
+    Return (expiry, dte) for the expiration nearest the DTE window midpoint.
+
+    A data-source failure must NOT be swallowed here. Previously a rate-limited
+    `.options` call returned (None, None), which screen_ticker reported as
+    "No expiry in DTE [...]" -- a genuine-looking screen rejection -- and the
+    server then deleted the ticker's previously published signal. Over a few
+    hours of 429s that emptied the whole Vol & Momentum table one row at a
+    time. Now the exception propagates and becomes "Options list error: ..."
+    (transient => old row kept). An EMPTY expirations list is treated the same
+    way: Yahoo returns () when throttled, and no optionable S&P 500 name has
+    zero listed expirations.
+    """
+    expirations = ticker_obj.options          # let failures propagate
+    if not expirations:
+        raise RuntimeError("options list empty (rate-limited or stale feed)")
     target_dte = (DTE_MIN + DTE_MAX) / 2.0
     best_exp, best_dte, best_dist = None, None, float("inf")
     for exp_str in expirations:
@@ -401,6 +438,29 @@ def pick_best_expiry(ticker_obj, today: datetime.date):
         except ValueError:
             continue
     return best_exp, best_dte
+
+def list_expiries_in_window(ticker_obj, today: datetime.date) -> list[tuple[str, int]]:
+    """
+    EVERY listed expiry with DTE_MIN <= DTE <= DTE_MAX, nearest-to-midpoint
+    first. Names with dense listings (Mon/Wed/Fri weeklies) get each one
+    screened; screen_ticker keeps the best-scoring expiry per ticker.
+    Feed failures propagate exactly like pick_best_expiry (transient).
+    """
+    expirations = ticker_obj.options          # let failures propagate
+    if not expirations:
+        raise RuntimeError("options list empty (rate-limited or stale feed)")
+    target_dte = (DTE_MIN + DTE_MAX) / 2.0
+    out: list[tuple[str, int]] = []
+    for exp_str in expirations:
+        try:
+            dte = (datetime.date.fromisoformat(exp_str) - today).days
+        except Exception:
+            continue
+        if DTE_MIN <= dte <= DTE_MAX:
+            out.append((exp_str, dte))
+    out.sort(key=lambda e: (abs(e[1] - target_dte), e[1]))
+    return out
+
 
 def extract_legs(chain_df, spot, dte_days, option_type, r, ticker: str = ""):
     """
@@ -440,7 +500,7 @@ def extract_legs(chain_df, spot, dte_days, option_type, r, ticker: str = ""):
     T = max(dte_days, 1) / 365.0
     q = get_dividend_yield(ticker, spot) if ticker else 0.0
 
-    long_cands, short_cands = [], []
+    long_cands, short_cands, skew_cands = [], [], []
 
     for _, row in chain_df.iterrows():
         strike = _safe_float(row.get("strike"))
@@ -479,6 +539,8 @@ def extract_legs(chain_df, spot, dte_days, option_type, r, ticker: str = ""):
             long_cands.append((abs(delta - 0.50), strike, iv, delta, bid_v, ask_v))
         if SHORT_DELTA_LO <= delta <= SHORT_DELTA_HI:
             short_cands.append((abs(delta - 0.15), strike, iv, delta, bid_v, ask_v))
+        if SKEW_DELTA_LO <= delta <= SKEW_DELTA_HI:
+            skew_cands.append((abs(delta - 0.25), strike, iv, delta, bid_v, ask_v))
 
     def _best(cands):
         if not cands:
@@ -489,7 +551,7 @@ def extract_legs(chain_df, spot, dte_days, option_type, r, ticker: str = ""):
                 "bid": round(bid, 3), "ask": round(ask, 3),
                 "mid": round((bid + ask) / 2, 3)}
 
-    return _best(long_cands), _best(short_cands)
+    return _best(long_cands), _best(short_cands), _best(skew_cands)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TWO-PASS POST-PROCESSING
@@ -533,6 +595,66 @@ def apply_cross_sectional_scores(results: list[dict]) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # SINGLE-TICKER PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _evaluate_expiry(tk, exp_str: str, dte: int, direction: str, spot: float,
+                     rv20: float, f2: float, r_f: float, ticker: str) -> dict:
+    """Score ONE expiry. Returns the candidate, or {"reason": ...} on rejection."""
+    try:
+        chain    = tk.option_chain(exp_str)
+        chain_df = chain.calls if direction == "CALL" else chain.puts
+    except Exception as e:
+        return {"reason": f"Chain error: {e}"}
+
+    # An empty chain for a listed expiry is a feed failure (throttled / stale),
+    # not "no strike qualifies": reported as a transient chain error so the
+    # server keeps the previous signal.
+    if chain_df is None or len(chain_df) == 0:
+        return {"reason": "Chain error: empty option chain (rate-limited or stale feed)"}
+    if "bid" in chain_df.columns and "ask" in chain_df.columns:
+        two_sided = ((chain_df["bid"] > 0) & (chain_df["ask"] > 0)).sum()
+        if two_sided == 0:
+            return {"reason": "Chain error: no two-sided quotes (closed market / stale feed)"}
+
+    long_leg, short_leg, skew_leg = extract_legs(chain_df, spot, dte, direction.lower(), r_f, ticker=ticker)
+    if long_leg is None:
+        return {"reason": f"No 50Δ leg in [{LONG_DELTA_LO},{LONG_DELTA_HI}]"}
+    if short_leg is None:
+        return {"reason": f"No 15Δ leg in [{SHORT_DELTA_LO},{SHORT_DELTA_HI}]"}
+
+    atm_iv = long_leg["iv"]
+    otm_iv = short_leg["iv"]
+    if atm_iv <= 0:
+        return {"reason": "ATM IV zero or invalid"}
+
+    # Skew per the video: ATM vs the 25-delta wing. Fall back to the sold
+    # strike only if no 20-30 delta strike is quoted.
+    iv_25d   = skew_leg["iv"] if skew_leg else otm_iv
+    raw_skew = (atm_iv - iv_25d) / atm_iv
+    vrp      = atm_iv - rv20
+    wing_vrp = otm_iv - rv20
+    f1       = score_f1_skew_edge(raw_skew)
+    f3       = score_f3_vrp(vrp, wing_vrp)
+    f4       = 50.0
+
+    # Put-call-parity twin, quoted from the SAME chain fetch as the signal
+    # legs so both versions are compared at one instant. Never fatal.
+    try:
+        parity_info = parity.vertical_twin(chain, direction,
+                                           long_leg["strike"], short_leg["strike"],
+                                           exp_str, spot)
+    except Exception as e:
+        parity_info = {"available": False, "reason": f"{type(e).__name__}: {e}"}
+
+    return {
+        "expiry": exp_str, "dte": dte,
+        "long_leg": long_leg, "short_leg": short_leg,
+        "atm_iv": atm_iv, "otm_iv": otm_iv, "iv_25d": iv_25d,
+        "raw_skew": raw_skew, "vrp": vrp, "wing_vrp": wing_vrp,
+        "f1": f1, "f3": f3, "f4": f4,
+        "composite": composite_score(f1, f2, f3, f4),
+        "parity": parity_info,
+    }
+
 
 def screen_ticker(ticker: str, today: datetime.date, bd: BenchmarkData,
                   direction_override: Optional[str] = None) -> dict:
@@ -597,46 +719,52 @@ def screen_ticker(ticker: str, today: datetime.date, bd: BenchmarkData,
     except Exception:
         earn_days, earn_date = None, None
 
+    # Every listed expiry inside [DTE_MIN, DTE_MAX] is screened, not just the
+    # one nearest the midpoint: names with Mon/Wed/Fri weeklies have several
+    # valid DTEs, and skew/VRP (f1/f3) differ per expiry. The best-scoring
+    # expiry becomes the ticker's signal (one row per ticker, as before).
     try:
-        exp_str, dte = pick_best_expiry(tk, today)
+        expiries = list_expiries_in_window(tk, today)
     except Exception as e:
         return {**base, "status": "FILTERED", "reason": f"Options list error: {e}"}
 
-    if exp_str is None:
+    if not expiries:
         return {**base, "status": "FILTERED",
                 "reason": f"No expiry in DTE [{DTE_MIN},{DTE_MAX}]"}
-
-    try:
-        chain    = tk.option_chain(exp_str)
-        chain_df = chain.calls if direction == "CALL" else chain.puts
-    except Exception as e:
-        return {**base, "status": "FILTERED", "reason": f"Chain error: {e}"}
+    if VM_MAX_EXPIRIES > 0:
+        expiries = expiries[:VM_MAX_EXPIRIES]
 
     r_f = get_risk_free_rate()  # live ^IRX rate, same as IB
-    long_leg, short_leg = extract_legs(chain_df, spot, dte, direction.lower(), r_f, ticker=ticker)
+    best: Optional[dict] = None
+    reasons: list[str] = []
+    for exp_str, dte in expiries:
+        c = _evaluate_expiry(tk, exp_str, dte, direction, spot, rv20, f2, r_f, ticker)
+        if "reason" in c:
+            reasons.append(c["reason"])
+            continue
+        if best is None or c["composite"] > best["composite"]:
+            best = c
 
-    if long_leg is None:
-        return {**base, "status": "FILTERED",
-                "reason": f"No 50Δ leg in [{LONG_DELTA_LO},{LONG_DELTA_HI}]"}
-    if short_leg is None:
-        return {**base, "status": "FILTERED",
-                "reason": f"No 15Δ leg in [{SHORT_DELTA_LO},{SHORT_DELTA_HI}]"}
+    if best is None:
+        # Report a genuine rejection over a transient one only if EVERY expiry
+        # was genuinely rejected; any chain error keeps the old row (transient).
+        chain_errs = [r for r in reasons if r.startswith("Chain error")]
+        reason = chain_errs[0] if chain_errs else reasons[0]
+        if len(expiries) > 1:
+            reason += f" (all {len(expiries)} expiries in DTE [{DTE_MIN},{DTE_MAX}])"
+        return {**base, "status": "FILTERED", "reason": reason}
 
-    atm_iv = long_leg["iv"]
-    otm_iv = short_leg["iv"]
-    if atm_iv <= 0:
-        return {**base, "status": "FILTERED", "reason": "ATM IV zero or invalid"}
-
-    raw_skew = (atm_iv - otm_iv) / atm_iv
-    vrp      = atm_iv - rv20
-    f1       = score_f1_skew_edge(raw_skew)
-    f3       = score_f3_vrp(vrp)
-    f4       = 50.0
-    comp     = composite_score(f1, f2, f3, f4)
+    exp_str, dte = best["expiry"], best["dte"]
+    long_leg, short_leg = best["long_leg"], best["short_leg"]
+    atm_iv, otm_iv, iv_25d = best["atm_iv"], best["otm_iv"], best["iv_25d"]
+    raw_skew, vrp, wing_vrp = best["raw_skew"], best["vrp"], best["wing_vrp"]
+    f1, f3, f4, comp = best["f1"], best["f3"], best["f4"], best["composite"]
+    parity_info = best["parity"]
 
     return {
         **base,
         "status":       "SCORED",
+        "parity":       parity_info,
         "direction":    direction,
         "dte":          dte,
         "expiry":       exp_str,
@@ -659,6 +787,8 @@ def screen_ticker(ticker: str, today: datetime.date, bd: BenchmarkData,
         ), 4),  # max spread ratio across both legs, for frontend filter
         "atm_iv":       atm_iv,
         "otm_iv":       otm_iv,
+        "iv_25d":       iv_25d,
+        "wing_vrp":     wing_vrp,
         "rv20":         rv20,
         "vrp":          vrp,
         "raw_skew":     raw_skew,
@@ -677,6 +807,32 @@ def screen_ticker(ticker: str, today: datetime.date, bd: BenchmarkData,
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN RUNNER  (callable from orchestrator)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Last full cycle's scored rows: the cross-section a single-ticker refresh is
+# ranked against (momentum rank m2 and skew z-score are relative to peers).
+_LAST_SCORED: list[dict] = []
+
+
+def refresh_one(ticker: str, prev: Optional[dict] = None) -> dict:
+    """
+    Re-screen ONE ticker on fresh data (called by the dashboard's Refresh).
+
+    The cross-sectional parts of the score are recomputed against the last full
+    cycle with this ticker's old row replaced by the fresh one, so the refreshed
+    composite stays comparable with the rest of the table.
+    """
+    t = ticker.upper()
+    bd = fetch_benchmarks()
+    r = screen_ticker(t, datetime.date.today(), bd)
+    if r.get("status") != "SCORED":
+        return r
+    # Copies, so the stored cross-section isn't rewritten by this re-rank.
+    # Before the first full cycle finishes there are no peers and the
+    # relative factors fall back to neutral (rank 50, skew z 0).
+    peers = [dict(p) for p in _LAST_SCORED if p.get("ticker") != t]
+    apply_cross_sectional_scores(peers + [r])
+    return r
+
 
 def run(
     watchlist: Optional[list[str]] = None,
@@ -700,7 +856,8 @@ def run(
 
     for i, ticker in enumerate(watchlist, 1):
         try:
-            result = screen_ticker(ticker, today, bd, direction_override)
+            with scan_control.ticker_slot():
+                result = screen_ticker(ticker, today, bd, direction_override)
         except Exception as e:
             result = {"ticker": ticker.upper(), "status": "FILTERED",
                       "reason": f"Unexpected error: {e}"}
@@ -715,6 +872,8 @@ def run(
             time.sleep(INTER_TICKER_SLEEP)
 
     apply_cross_sectional_scores(results)
+    _LAST_SCORED.clear()
+    _LAST_SCORED.extend(r for r in results if r.get("status") == "SCORED")
 
     # Re-emit final scored results so UI gets updated composites
     if on_progress:

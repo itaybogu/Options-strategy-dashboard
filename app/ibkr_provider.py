@@ -45,6 +45,7 @@ import asyncio
 import datetime as _dt
 import logging
 import math
+import os
 import threading
 import time
 from typing import Any, Optional
@@ -161,9 +162,31 @@ class _IBConnection:
             pass
 
 
+CONN_RETRY_COOLDOWN = float(os.getenv("IBKR_RETRY_COOLDOWN", "60"))
+_last_failure_at: float = 0.0
+_last_failure_err: str = ""
+
+
 def _get_conn(host: str, port: int, client_id: int) -> _IBConnection:
-    """Lazily create / reuse the shared connection, reconnecting if dropped."""
-    global _conn
+    """
+    Lazily create / reuse the shared connection, reconnecting if dropped.
+
+    Previously this constructed a brand new _IBConnection -- new thread, new
+    asyncio event loop, new ib_insync IB() object -- on every single call
+    whenever the last one wasn't currently connected, with no memory of a
+    just-failed attempt. When TWS genuinely isn't running, that meant every
+    ticker request across every strategy, every cycle, forever, each paying
+    the full CONNECT_TIMEOUT before falling back to yfinance, and each
+    leaving behind a thread + event loop + IB() object that may not release
+    cleanly (the failure path in _IBConnection only closes the loop, not
+    whatever ib_insync/eventkit registered when IB() was constructed). On a
+    long-running continuous-mode process hitting hundreds of tickers per
+    cycle, that is thousands of these a day -- a very plausible driver of
+    slow, steady memory growth, independent of whatever else is or isn't
+    leaking. This cooldown makes a known-bad TWS endpoint fail fast, without
+    a new connection attempt, until IBKR_RETRY_COOLDOWN seconds have passed.
+    """
+    global _conn, _last_failure_at, _last_failure_err
     with _conn_lock:
         if _conn is not None and _conn.is_connected():
             return _conn
@@ -171,7 +194,21 @@ def _get_conn(host: str, port: int, client_id: int) -> _IBConnection:
             log.warning("IBKR connection lost — reconnecting.")
             _conn.close()
             _conn = None
-        _conn = _IBConnection(host, port, client_id)
+
+        now = time.time()
+        elapsed = now - _last_failure_at
+        if _last_failure_at and elapsed < CONN_RETRY_COOLDOWN:
+            raise ConnectionError(
+                f"TWS at {host}:{port} failed recently ({_last_failure_err}); "
+                f"not retrying for {CONN_RETRY_COOLDOWN - elapsed:.0f}s more "
+                f"(IBKR_RETRY_COOLDOWN={CONN_RETRY_COOLDOWN:.0f}s)"
+            )
+        try:
+            _conn = _IBConnection(host, port, client_id)
+        except Exception as e:
+            _last_failure_at = time.time()
+            _last_failure_err = f"{type(e).__name__}: {e}"
+            raise
         return _conn
 
 
