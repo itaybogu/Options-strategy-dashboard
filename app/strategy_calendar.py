@@ -119,10 +119,18 @@ MAX_DEBIT_EDGE = 0.30
 #   - Short leg (front month): max 60 DTE  (= long DTE - min gap)
 #   - Gap between legs: min 7 days, max 30 days
 DTE_GAP_BUCKETS = [
-    (20, 30),   # primary: 20–30d gap
+    (50, 60),   # 30/90-style pairs (one of the video's three core buckets)
+    (20, 30),   # primary: 20–30d gap (30/60, 60/90)
     (10, 20),   # secondary: 10–20d gap
     (7,  10),   # tertiary: 7–10d gap
 ]
+
+# Earnings contamination: the Forward Factor uses raw ATM IV, so any pair
+# whose back expiry is on/after the next earnings date carries the earnings
+# jump variance and its FF is meaningless. Such pairs are dropped BEFORE the
+# TOP_PAIRS cut so they can never crowd out clean pairs. If the earnings date
+# is unknown the pair is kept (earn_days is shown on the row).
+EXCLUDE_EARNINGS_PAIRS = True
 
 MIN_DTE = 7    # minimum DTE for either leg
 MAX_DTE = 90   # maximum DTE for the long (back) leg
@@ -543,6 +551,10 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
         results = []
 
         for (exp1, exp2, dte1, dte2, bucket) in valid_pairs:
+            # Skip pairs whose back leg spans earnings (no chain fetch needed).
+            if EXCLUDE_EARNINGS_PAIRS and earn_days is not None and earn_days <= dte2:
+                continue
+
             t1 = dte1 / 365.0
             t2 = dte2 / 365.0
 

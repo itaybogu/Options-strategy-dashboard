@@ -289,9 +289,25 @@ def score_f2_momentum_composite(m1, m2, m3, m4, m5, m6) -> float:
     return (m1 + m2 + m3 + m4 + m5 + m6) / 6.0
 
 def score_f2_direction(f2: float, direction: str) -> float:
+    """Legacy helper (bull composite mirrored). Kept for compatibility."""
     if direction.upper() == "CALL":
         return _clamp(f2)
     return _clamp(100.0 - f2)
+
+
+def score_f2_for(direction: str, m1, m2, m3, m4, m5, m6) -> float:
+    """
+    Directional momentum score.
+      CALL: mean(m1..m6)                       (strength, near 52w high)
+      PUT : mean(100-m1..100-m4, m5, 100-m6)   (weakness, far from 52w high)
+    m5 (volume surge) is unsigned: heavy volume confirms EITHER direction, so
+    it is not inverted for puts (the old 100 - f2_bull inverted it, which
+    penalised high-volume sell-offs).
+    """
+    if direction.upper() == "CALL":
+        return _clamp((m1 + m2 + m3 + m4 + m5 + m6) / 6.0)
+    return _clamp(((100 - m1) + (100 - m2) + (100 - m3) + (100 - m4)
+                   + m5 + (100 - m6)) / 6.0)
 
 def score_f3_vrp(vrp: float, wing_vrp: Optional[float] = None) -> float:
     """
@@ -323,16 +339,18 @@ def assign_conclusion(score: float) -> str:
 # BLACK-SCHOLES DELTA
 # ─────────────────────────────────────────────────────────────────────────────
 
-def bs_delta(spot, strike, iv, dte_days, option_type, r) -> Optional[float]:
+def bs_delta(spot, strike, iv, dte_days, option_type, r, q: float = 0.0) -> Optional[float]:
+    """Black-Scholes-Merton delta (absolute value) with dividend yield q."""
     T = dte_days / 365.0
     if T <= 0.0 or iv <= 0.0 or spot <= 0.0 or strike <= 0.0:
         return None
     try:
-        d1 = (math.log(spot / strike) + (r + 0.5 * iv ** 2) * T) / (iv * math.sqrt(T))
+        d1 = (math.log(spot / strike) + (r - q + 0.5 * iv ** 2) * T) / (iv * math.sqrt(T))
+        disc_q = math.exp(-q * T)
         if option_type.lower() == "call":
-            return float(scipy_norm.cdf(d1))
+            return float(disc_q * scipy_norm.cdf(d1))
         else:
-            return float(scipy_norm.cdf(-d1))
+            return float(disc_q * scipy_norm.cdf(-d1))
     except (ValueError, ZeroDivisionError, OverflowError):
         return None
 
@@ -531,7 +549,7 @@ def extract_legs(chain_df, spot, dte_days, option_type, r, ticker: str = ""):
         if iv is None:
             continue
 
-        delta = bs_delta(spot, strike, iv, dte_days, option_type, r)
+        delta = bs_delta(spot, strike, iv, dte_days, option_type, r, q)
         if delta is None:
             continue
 
@@ -557,7 +575,40 @@ def extract_legs(chain_df, spot, dte_days, option_type, r, ticker: str = ""):
 # TWO-PASS POST-PROCESSING
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Fields copied from the chosen direction's candidate onto the result row.
+_CAND_FIELDS = (
+    "direction", "dte", "expiry", "long_strike", "short_strike",
+    "long_delta", "short_delta", "long_bid", "long_ask", "long_mid",
+    "short_bid", "short_ask", "short_mid", "leg_spread_max",
+    "atm_iv", "otm_iv", "iv_25d", "wing_vrp", "vrp", "raw_skew",
+    "skew_z", "f1", "f2", "f3", "f4", "composite", "parity",
+)
+
+
+def _adopt_best_direction(r: dict) -> None:
+    """Copy the highest-composite direction's candidate onto the row."""
+    cands = r.get("candidates") or {}
+    if not cands:
+        return
+    best = max(cands.values(), key=lambda c: c["composite"])
+    for k in _CAND_FIELDS:
+        if k in best:
+            r[k] = best[k]
+    r["conclusion"] = assign_conclusion(r["composite"])
+    other = [c for c in cands.values() if c is not best]
+    r["alt_direction"] = other[0]["direction"] if other else None
+    r["alt_composite"] = round(other[0]["composite"], 2) if other else None
+
+
 def apply_cross_sectional_scores(results: list[dict]) -> None:
+    """
+    Pass 2. With the whole cross-section known:
+      1. real momentum rank m2 -> directional f2 for CALL and PUT candidates
+      2. skew z-score f4, computed SEPARATELY within the CALL pool and the PUT
+         pool (call and put skew have structurally different levels, so one
+         pooled median/MAD biased f4 toward puts)
+      3. direction = whichever candidate has the higher final composite
+    """
     scored = [r for r in results if r.get("status") == "SCORED"]
     n = len(scored)
     if n == 0:
@@ -565,32 +616,32 @@ def apply_cross_sectional_scores(results: list[dict]) -> None:
 
     if n > 1:
         sorted_by_ret = sorted(scored, key=lambda r: r["r_21d"])
-        rank_map = {r["ticker"]: i for i, r in enumerate(sorted_by_ret)}
-        for r in scored:
-            rank    = rank_map[r["ticker"]]
-            m2      = score_m2_cross_sectional(rank, n)
-            r["m2"] = m2
-            f2_bull = score_f2_momentum_composite(r["m1"], m2, r["m3"], r["m4"], r["m5"], r["m6"])
-            r["f2_bull"] = f2_bull
-            r["f2"]      = score_f2_direction(f2_bull, r["direction"])
-    else:
-        r = scored[0]
-        r["m2"] = 50.0
-        f2_bull = score_f2_momentum_composite(r["m1"], 50.0, r["m3"], r["m4"], r["m5"], r["m6"])
-        r["f2_bull"] = f2_bull
-        r["f2"]      = score_f2_direction(f2_bull, r["direction"])
+        rank_map = {id(r): i for i, r in enumerate(sorted_by_ret)}
+    for r in scored:
+        m2 = score_m2_cross_sectional(rank_map[id(r)], n) if n > 1 else 50.0
+        r["m2"] = m2
+        ms = (r["m1"], m2, r["m3"], r["m4"], r["m5"], r["m6"])
+        r["f2_bull"] = score_f2_momentum_composite(*ms)
+        r["f2_bear"] = score_f2_for("PUT", *ms)
+        for d, c in (r.get("candidates") or {}).items():
+            c["f2"] = score_f2_for(d, *ms)
 
-    skews = [r["raw_skew"] for r in scored]
-    med   = statistics.median(skews)
-    mad   = statistics.median([abs(s - med) for s in skews])
+    for d in ("CALL", "PUT"):
+        pool = [r["candidates"][d] for r in scored
+                if d in (r.get("candidates") or {})]
+        if not pool:
+            continue
+        skews = [c["raw_skew"] for c in pool]
+        med = statistics.median(skews)
+        mad = statistics.median([abs(s - med) for s in skews])
+        for c in pool:
+            z = (c["raw_skew"] - med) / mad if mad > 1e-8 else 0.0
+            c["skew_z"] = z
+            c["f4"] = score_f4_skew_z(z)
+            c["composite"] = composite_score(c["f1"], c["f2"], c["f3"], c["f4"])
 
     for r in scored:
-        z  = (r["raw_skew"] - med) / mad if mad > 1e-8 else 0.0
-        f4 = score_f4_skew_z(z)
-        r["skew_z"]    = z
-        r["f4"]        = f4
-        r["composite"] = composite_score(r["f1"], r["f2"], r["f3"], f4)
-        r["conclusion"] = assign_conclusion(r["composite"])
+        _adopt_best_direction(r)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SINGLE-TICKER PIPELINE
@@ -704,15 +755,17 @@ def screen_ticker(ticker: str, today: datetime.date, bd: BenchmarkData,
     avg_vol_30d = float(np.mean(volumes[-30:])) if len(volumes) >= 30 else float(np.mean(volumes))
 
     m1 = score_m1_time_series(r_21d)
-    m2 = 50.0
+    m2 = 50.0   # provisional; real cross-sectional rank is set in pass 2
     m3 = score_m3_market_alpha(r_21d, bd.spy_r21d)
     m4 = score_m4_sector_alpha(r_21d, sector, bd)
     m5 = score_m5_volume_momentum(volumes)
     m6 = score_m6_52w_high(spot, high_52w)
 
-    f2_bull   = score_f2_momentum_composite(m1, m2, m3, m4, m5, m6)
-    direction = direction_override.upper() if direction_override else ("CALL" if f2_bull >= 50.0 else "PUT")
-    f2        = score_f2_direction(f2_bull, direction)
+    f2_bull = score_f2_momentum_composite(m1, m2, m3, m4, m5, m6)
+    # Both directions are evaluated; the final direction is chosen after the
+    # cross-sectional pass (apply_cross_sectional_scores). An explicit
+    # override still restricts the scan to one side.
+    directions = [direction_override.upper()] if direction_override else ["CALL", "PUT"]
 
     try:
         earn_days, earn_date = get_next_earnings(tk, today)
@@ -734,75 +787,92 @@ def screen_ticker(ticker: str, today: datetime.date, bd: BenchmarkData,
     if VM_MAX_EXPIRIES > 0:
         expiries = expiries[:VM_MAX_EXPIRIES]
 
-    r_f = get_risk_free_rate()  # live ^IRX rate, same as IB
-    best: Optional[dict] = None
-    reasons: list[str] = []
-    for exp_str, dte in expiries:
-        c = _evaluate_expiry(tk, exp_str, dte, direction, spot, rv20, f2, r_f, ticker)
-        if "reason" in c:
-            reasons.append(c["reason"])
-            continue
-        if best is None or c["composite"] > best["composite"]:
-            best = c
+    # Earnings blackout: an expiry on/after the next earnings date carries the
+    # earnings jump in its IV, which distorts both skew (f1) and VRP vs the
+    # clean RV20 (f3). Those expiries are skipped.
+    if earn_days is not None:
+        clean = [(e, d) for (e, d) in expiries if earn_days > d]
+        if not clean:
+            return {**base, "status": "FILTERED",
+                    "reason": f"Earnings in {earn_days}d falls before every expiry in DTE [{DTE_MIN},{DTE_MAX}]",
+                    "earn_days": earn_days, "earn_date": earn_date}
+        expiries = clean
 
-    if best is None:
-        # Report a genuine rejection over a transient one only if EVERY expiry
-        # was genuinely rejected; any chain error keeps the old row (transient).
-        chain_errs = [r for r in reasons if r.startswith("Chain error")]
-        reason = chain_errs[0] if chain_errs else reasons[0]
+    r_f = get_risk_free_rate()  # live ^IRX rate, same as IB
+    candidates: dict[str, dict] = {}
+    reasons: list[str] = []
+    for direction in directions:
+        f2_d = score_f2_for(direction, m1, m2, m3, m4, m5, m6)
+        best: Optional[dict] = None
+        for exp_str, dte in expiries:
+            c = _evaluate_expiry(tk, exp_str, dte, direction, spot, rv20, f2_d, r_f, ticker)
+            if "reason" in c:
+                reasons.append(f"{direction}: {c['reason']}")
+                continue
+            if best is None or c["composite"] > best["composite"]:
+                best = c
+        if best is None:
+            continue
+        ll, sl = best["long_leg"], best["short_leg"]
+        candidates[direction] = {
+            "direction":    direction,
+            "dte":          best["dte"],
+            "expiry":       best["expiry"],
+            "long_strike":  ll["strike"],
+            "short_strike": sl["strike"],
+            "long_delta":   ll["bs_delta"],
+            "short_delta":  sl["bs_delta"],
+            "long_bid":     ll.get("bid"),
+            "long_ask":     ll.get("ask"),
+            "long_mid":     ll.get("mid"),
+            "short_bid":    sl.get("bid"),
+            "short_ask":    sl.get("ask"),
+            "short_mid":    sl.get("mid"),
+            "leg_spread_max": round(max(
+                (ll["ask"] - ll["bid"]) / ll["mid"] if ll.get("mid") else 0,
+                (sl["ask"] - sl["bid"]) / sl["mid"] if sl.get("mid") else 0,
+            ), 4),
+            "atm_iv":   best["atm_iv"],
+            "otm_iv":   best["otm_iv"],
+            "iv_25d":   best["iv_25d"],
+            "wing_vrp": best["wing_vrp"],
+            "vrp":      best["vrp"],
+            "raw_skew": best["raw_skew"],
+            "skew_z":   0.0,
+            "f1": best["f1"], "f2": f2_d, "f3": best["f3"], "f4": best["f4"],
+            "composite": best["composite"],
+            "parity":    best["parity"],
+        }
+
+    if not candidates:
+        # Any chain error keeps the old row (transient); otherwise a genuine
+        # rejection.
+        chain_errs = [r for r in reasons if "Chain error" in r]
+        reason = chain_errs[0] if chain_errs else (reasons[0] if reasons else "No candidate")
         if len(expiries) > 1:
             reason += f" (all {len(expiries)} expiries in DTE [{DTE_MIN},{DTE_MAX}])"
         return {**base, "status": "FILTERED", "reason": reason}
 
-    exp_str, dte = best["expiry"], best["dte"]
-    long_leg, short_leg = best["long_leg"], best["short_leg"]
-    atm_iv, otm_iv, iv_25d = best["atm_iv"], best["otm_iv"], best["iv_25d"]
-    raw_skew, vrp, wing_vrp = best["raw_skew"], best["vrp"], best["wing_vrp"]
-    f1, f3, f4, comp = best["f1"], best["f3"], best["f4"], best["composite"]
-    parity_info = best["parity"]
-
-    return {
+    row = {
         **base,
         "status":       "SCORED",
-        "parity":       parity_info,
-        "direction":    direction,
-        "dte":          dte,
-        "expiry":       exp_str,
         "spot":         spot,
         "sector":       sector,
         "avg_vol_30d":  round(avg_vol_30d / 1_000_000, 3),   # millions, for frontend filter
-        "long_strike":  long_leg["strike"],
-        "short_strike": short_leg["strike"],
-        "long_delta":   long_leg["bs_delta"],
-        "short_delta":  short_leg["bs_delta"],
-        "long_bid":     long_leg.get("bid"),
-        "long_ask":     long_leg.get("ask"),
-        "long_mid":     long_leg.get("mid"),
-        "short_bid":    short_leg.get("bid"),
-        "short_ask":    short_leg.get("ask"),
-        "short_mid":    short_leg.get("mid"),
-        "leg_spread_max": round(max(
-            (long_leg["ask"]  - long_leg["bid"])  / long_leg["mid"]  if long_leg.get("mid")  else 0,
-            (short_leg["ask"] - short_leg["bid"]) / short_leg["mid"] if short_leg.get("mid") else 0,
-        ), 4),  # max spread ratio across both legs, for frontend filter
-        "atm_iv":       atm_iv,
-        "otm_iv":       otm_iv,
-        "iv_25d":       iv_25d,
-        "wing_vrp":     wing_vrp,
         "rv20":         rv20,
-        "vrp":          vrp,
-        "raw_skew":     raw_skew,
-        "skew_z":       0.0,
         "r_21d":        r_21d,
         "high_52w":     high_52w,
         "earn_days":    earn_days,
         "earn_date":    earn_date,
         "m1": m1, "m2": m2, "m3": m3, "m4": m4, "m5": m5, "m6": m6,
         "f2_bull":  f2_bull,
-        "f1": f1, "f2": f2, "f3": f3, "f4": f4,
-        "composite":  comp,
-        "conclusion": assign_conclusion(comp),
+        "f2_bear":  score_f2_for("PUT", m1, m2, m3, m4, m5, m6),
+        "candidates": candidates,
     }
+    # Provisional pick (m2 = 50, f4 = 50) so the streamed row is usable;
+    # re-picked after the cross-sectional pass.
+    _adopt_best_direction(row)
+    return row
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN RUNNER  (callable from orchestrator)
@@ -829,7 +899,8 @@ def refresh_one(ticker: str, prev: Optional[dict] = None) -> dict:
     # Copies, so the stored cross-section isn't rewritten by this re-rank.
     # Before the first full cycle finishes there are no peers and the
     # relative factors fall back to neutral (rank 50, skew z 0).
-    peers = [dict(p) for p in _LAST_SCORED if p.get("ticker") != t]
+    import copy
+    peers = [copy.deepcopy(p) for p in _LAST_SCORED if p.get("ticker") != t]
     apply_cross_sectional_scores(peers + [r])
     return r
 
