@@ -61,6 +61,7 @@ import pandas as pd
 
 import data_provider
 import fundamentals
+import scan_control
 import option_pricing as op
 from strategy_calendar import get_sp500_tickers
 
@@ -400,14 +401,58 @@ def select_strike_moneyness(rows: list[dict],
 # PER-TICKER ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Chain fetches in phase 2 run LAST in the cycle, after three other strategies
+# have already spent most of Yahoo's request budget. A single 429 must not
+# silently turn into "no viable strike" for the whole book, so retry with
+# backoff before giving up on a name.
+CHAIN_RETRIES      = _env_int("PS_CHAIN_RETRIES", 3)
+CHAIN_RETRY_BASE_S = _env_float("PS_CHAIN_RETRY_BASE_S", 4.0)
+
+
+def _is_rate_limit(err: BaseException) -> bool:
+    s = str(err)
+    return "Too Many Requests" in s or "429" in s or "Rate limited" in s
+
+
+def _fetch_puts_with_retry(tk, ticker: str, exp_str: str):
+    """Return the puts DataFrame or raise the last error after retries."""
+    last: Optional[BaseException] = None
+    for attempt in range(max(1, CHAIN_RETRIES)):
+        try:
+            chain = tk.option_chain(exp_str)
+            return getattr(chain, "puts", None)
+        except Exception as e:
+            last = e
+            if not _is_rate_limit(e) or attempt == CHAIN_RETRIES - 1:
+                break
+            wait = CHAIN_RETRY_BASE_S * (2 ** attempt)
+            print(f"[put_selling] {ticker}: chain rate-limited, retry "
+                  f"{attempt + 1}/{CHAIN_RETRIES} in {wait:.0f}s")
+            time.sleep(wait)
+    if last is not None:
+        raise last
+    return None
+
+
+def _bump(reasons: Optional[dict], key: str) -> None:
+    if reasons is not None:
+        reasons[key] = reasons.get(key, 0) + 1
+
+
 def analyze_ticker(ticker: str, fcf: dict, mode: str = "fcf_premium",
-                   avg_vol_30d: Optional[float] = None) -> Optional[dict]:
+                   avg_vol_30d: Optional[float] = None,
+                   reasons: Optional[dict] = None) -> Optional[dict]:
     """
     Evaluate one name. Returns a single candidate dict, or None if unsuitable.
 
     `fcf` is the pre-fetched fundamentals record; it is passed in rather than
     fetched here so the caller can rank the whole universe by FCFY before
     deciding which names are worth the (much more expensive) option-chain fetch.
+
+    `reasons`, when given, is a counter dict the function increments with WHY
+    a name was rejected. Previously every rejection collapsed into a single
+    "had no viable strike/chain" figure, which made an upstream rate-limit
+    outage indistinguishable from a genuinely too-cheap vol surface.
     """
     try:
         tk = data_provider.get_ticker(ticker)
@@ -428,11 +473,25 @@ def analyze_ticker(ticker: str, fcf: dict, mode: str = "fcf_premium",
                     spot = float(h["Close"].iloc[-1])
             except Exception:
                 pass
-        if spot is None or spot <= 0 or spot < MIN_PRICE:
+        if spot is None or spot <= 0:
+            _bump(reasons, "no spot price (quote/history failed)")
+            return None
+        if spot < MIN_PRICE:
+            _bump(reasons, f"spot < MIN_PRICE {MIN_PRICE}")
             return None
 
-        picked = _pick_expiry(getattr(tk, "options", None) or [], date.today())
+        try:
+            expiries = getattr(tk, "options", None) or []
+        except Exception as e:
+            _bump(reasons, "expiry list fetch failed" +
+                  (" (rate limited)" if _is_rate_limit(e) else ""))
+            return None
+        if not expiries:
+            _bump(reasons, "no listed expiries")
+            return None
+        picked = _pick_expiry(expiries, date.today())
         if picked is None:
+            _bump(reasons, f"no expiry in {DTE_MIN}-{DTE_MAX} DTE window")
             return None
         exp_str, exp_date, dte = picked
 
@@ -441,14 +500,29 @@ def analyze_ticker(ticker: str, fcf: dict, mode: str = "fcf_premium",
         q = op.get_dividend_yield(ticker, spot)
 
         try:
-            chain = tk.option_chain(exp_str)
-            puts  = getattr(chain, "puts", None)
+            puts = _fetch_puts_with_retry(tk, ticker, exp_str)
         except Exception as e:
-            log.debug(f"{ticker}: chain fetch failed: {e}")
+            _bump(reasons, "chain fetch failed" +
+                  (" (rate limited)" if _is_rate_limit(e) else f": {type(e).__name__}"))
+            return None
+
+        if puts is None or len(puts) == 0:
+            _bump(reasons, "empty put chain")
             return None
 
         rows = _prepare_puts(puts, spot, T, r, q)
         if not rows:
+            # Distinguish "no quotes at all" (after-hours / rate-limited
+            # partial chain) from "quotes exist but fail liquidity gates".
+            try:
+                quoted = int(((puts["bid"].fillna(0) > 0) &
+                              (puts["ask"].fillna(0) > 0)).sum())
+            except Exception:
+                quoted = -1
+            if quoted == 0:
+                _bump(reasons, "chain has no two-sided quotes (closed market / stale feed)")
+            else:
+                _bump(reasons, "no strike passed OI/spread/delta/moneyness gates")
             return None
 
         fcfy = fcf.get("fcf_yield") if fcf else None
@@ -463,6 +537,7 @@ def analyze_ticker(ticker: str, fcf: dict, mode: str = "fcf_premium",
             raise ValueError(f"unknown mode: {mode}")
 
         if sel is None:
+            _bump(reasons, "no strike selected (FCF yield missing/non-positive)")
             return None
 
         premium    = sel["premium"]
@@ -528,13 +603,31 @@ def analyze_ticker(ticker: str, fcf: dict, mode: str = "fcf_premium",
         return result
 
     except Exception as e:
-        log.debug(f"{ticker}: analyze failed: {e}")
+        _bump(reasons, f"exception: {type(e).__name__}")
+        print(f"[put_selling] {ticker}: analyze failed: {type(e).__name__}: {e}")
         return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PORTFOLIO WEIGHTING
 # ══════════════════════════════════════════════════════════════════════════════
+
+def refresh_one(ticker: str, prev: Optional[dict] = None,
+                mode: str = "fcf_premium") -> Optional[dict]:
+    """
+    Re-price ONE name's put on a fresh chain (dashboard Refresh). Fundamentals
+    come from the cache (they change quarterly); the FCF rank/quintile is the
+    one from the last full screen, since it is relative to the whole universe.
+    Returns the unweighted candidate, or None if it no longer qualifies; the
+    caller reweights the book.
+    """
+    t = ticker.upper()
+    rec = dict(fundamentals.get_fcf_yield(t) or {})
+    for k in ("fcfy_rank", "fcfy_quintile"):
+        if rec.get(k) is None and prev and prev.get(k) is not None:
+            rec[k] = prev[k]
+    return analyze_ticker(t, rec, mode=mode)
+
 
 def apply_weights(results: list[dict], scheme: str = "risk") -> list[dict]:
     """
@@ -823,12 +916,14 @@ def run(
     total_e = len(eligible)
 
     n_analyze_none = n_analyze_error = 0
+    reject_reasons: dict[str, int] = {}
     for i, sym in enumerate(eligible, 1):
         rec = fcf_all.get(sym.upper()) or {}
         try:
-            cand = analyze_ticker(sym, rec, mode=mode)
+            with scan_control.ticker_slot():
+                cand = analyze_ticker(sym, rec, mode=mode, reasons=reject_reasons)
         except Exception as e:
-            log.debug(f"{sym}: unexpected analyze error: {e}")
+            print(f"[put_selling] {sym}: unexpected analyze error: {type(e).__name__}: {e}")
             n_analyze_error += 1
             cand = None
 
@@ -853,8 +948,9 @@ def run(
                                 r.get("ann_yield_if_repeated") or 0),
                  reverse=True)
 
+    breakdown = ", ".join(f"{v}x {k}" for k, v in
+                          sorted(reject_reasons.items(), key=lambda kv: -kv[1]))
     print(f"[put_selling] phase 2: {len(results)} candidates from {total_e} "
-          f"screened ({mode}, {weighting}-weighted); {n_analyze_none} had no "
-          f"viable strike/chain, {n_analyze_error} raised an exception "
-          f"(see debug log for exceptions if any)")
+          f"screened ({mode}, {weighting}-weighted); {n_analyze_none} rejected, "
+          f"{n_analyze_error} raised an exception. Rejections: {breakdown or 'none'}")
     return results

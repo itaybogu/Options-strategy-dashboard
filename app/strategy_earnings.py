@@ -18,6 +18,7 @@ import yfinance as yf          # retained: fallback path inside data_provider
 import numpy as np
 
 import data_provider
+import scan_control
 from datetime import datetime, timedelta
 from typing import Optional, Callable
 from scipy.interpolate import interp1d
@@ -87,7 +88,14 @@ def _parse_yf_calendar_df(df) -> list[dict]:
 
 
 def _fetch_nasdaq_calendar(start_date, end_date) -> list[dict]:
-    session = requests.Session()
+    # `with` closes the session's connection pool on exit. A Session that is
+    # merely dropped keeps its keep-alive sockets open until the GC gets to
+    # it, and over days of continuous cycles those sockets accumulate.
+    with requests.Session() as session:
+        return _fetch_nasdaq_calendar_with(session, start_date, end_date)
+
+
+def _fetch_nasdaq_calendar_with(session, start_date, end_date) -> list[dict]:
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -125,7 +133,11 @@ def _fetch_nasdaq_calendar(start_date, end_date) -> list[dict]:
 
 
 def _fetch_yahoo_calendar_scrape(start_date, end_date) -> list[dict]:
-    session = requests.Session()
+    with requests.Session() as session:
+        return _fetch_yahoo_calendar_scrape_with(session, start_date, end_date)
+
+
+def _fetch_yahoo_calendar_scrape_with(session, start_date, end_date) -> list[dict]:
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -196,6 +208,14 @@ def _make_session() -> requests.Session:
     return s
 
 
+# One rotating session per run() (set in run(), closed in its finally).
+# Previously _ticker() built a brand-new requests.Session for EVERY ticker and
+# never closed it: each one owns a connection pool with live keep-alive
+# sockets, so a 24/7 scanner leaked a few file descriptors per ticker per
+# cycle until the process hit the OS limit ("Too many open files").
+_RUN_SESSION: Optional[requests.Session] = None
+
+
 def _ticker(symbol: str):
     """
     Single chokepoint for every per-symbol data fetch in this module.
@@ -206,7 +226,7 @@ def _ticker(symbol: str):
     IBKR path. The `session` is only meaningful to yfinance (UA rotation to
     dodge Yahoo throttling) and is ignored by IBKR.
     """
-    return data_provider.get_ticker(symbol, session=_make_session())
+    return data_provider.get_ticker(symbol, session=_RUN_SESSION)
 
 
 def _sleep(base: float, jitter: float = 0.5) -> None:
@@ -445,6 +465,12 @@ def analyse(symbol: str, meta: dict | None = None) -> dict:
     if rv30 is None or rv30 <= 0:
         return {**base, "error": "RV30 unavailable (insufficient/invalid price data)"}
 
+    # Both straddle legs must carry a live two-sided quote; a straddle priced
+    # off last/model only is not something you can actually sell.
+    if not (call_bid and call_ask and call_ask > call_bid
+            and put_bid and put_ask and put_ask > put_bid):
+        return {**base, "error": "ATM straddle legs not two-sided quoted"}
+
     iv30_val   = ts(30)
     if iv30_val is None or not math.isfinite(iv30_val):
         return {**base, "error": "IV30 unavailable from term structure"}
@@ -514,13 +540,35 @@ def run(
     if not entries:
         return []
 
+    global _RUN_SESSION
+    _RUN_SESSION = _make_session()
+    try:
+        return _run_entries(entries, on_progress)
+    finally:
+        try:
+            _RUN_SESSION.close()
+        except Exception:
+            pass
+        _RUN_SESSION = None
+
+
+def refresh_one(ticker: str, prev: Optional[dict] = None) -> dict:
+    """Re-analyse ONE ticker on fresh data (dashboard Refresh), keeping its
+    earnings-calendar metadata from the previous row."""
+    meta = {k: (prev or {}).get(k) for k in ("company", "earnings_date", "earnings_time")
+            if (prev or {}).get(k) is not None}
+    return analyse(ticker, meta=meta or None)
+
+
+def _run_entries(entries: list[dict], on_progress) -> list[dict]:
     total   = len(entries)
     results = []
 
     for i, entry in enumerate(entries, 1):
         ticker = entry["ticker"]
         try:
-            result = analyse(ticker, meta=entry)
+            with scan_control.ticker_slot():
+                result = analyse(ticker, meta=entry)
         except Exception as e:
             result = {
                 "ticker":        ticker,

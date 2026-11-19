@@ -19,6 +19,8 @@ import yfinance as yf          # retained: fallback path inside data_provider
 import pandas as pd
 
 import data_provider
+import parity
+import scan_control
 from option_pricing import atm_iv_from_chain, get_risk_free_rate, get_dividend_yield, _euro_call
 
 log = logging.getLogger(__name__)
@@ -93,11 +95,23 @@ TOP_PAIRS = 3
 
 # Model vs. Market Divergence Filter: a calendar spread whose quoted net
 # debit sits far above what Black-Scholes says it should cost is usually a
-# bad/stale quote or an illiquid market, not a real edge -- exclude it rather
-# than surface a trade that looks attractive on FF% but is actually just
-# mispriced. 0.30 = net debit may not exceed model debit by more than 30%.
-# Pairs with no live quotes fall back to the model price for both sides
-# (edge = 0), so this only ever filters quoted markets, never theoretical ones.
+# bad/stale quote or an illiquid market, not a real edge. This is a SOFT
+# filter: every row always gets a debit_edge field attached (never excluded
+# server-side); the dashboard's own "Debit edge <=30%" toggle (default on)
+# is what actually hides rows above the threshold, so it's the user's call
+# to turn it off and see everything. 0.30 = net debit may not exceed model
+# debit by more than 30%. Pairs with no live quotes fall back to the model
+# price for both sides (edge = 0).
+#
+# Deliberately uses r=0, q=0, and ONE shared strike for both legs (whichever
+# of strike_short/strike_long dashboard.html's payoff chart uses -- see
+# _payoffCal()/bsCall() there) rather than a more theoretically complete
+# price (real rate, dividend yield, per-leg strikes). Pricing this more
+# "correctly" would let it disagree with what a user sees when they open the
+# payoff chart for that exact same row -- exactly the inconsistency this
+# filter exists to avoid, not the accuracy this app's other pricing already
+# gets right elsewhere (e.g. option_pricing.py's own _euro_call, used for
+# more rigorous work than a same-page consistency check).
 MAX_DEBIT_EDGE = 0.30
 
 # DTE rules (from strategy spec):
@@ -226,13 +240,26 @@ def filter_by_volume(tickers: list[str]) -> tuple[list[str], dict]:
     value can be stored per-ticker and used by the frontend toggle.
     """
     try:
+        # threads=True is safe here: data_provider.download() no longer
+        # calls yf.download() itself (see its docstring) -- it fetches each
+        # ticker individually via a plain ThreadPoolExecutor, so this never
+        # touches yfinance's own internal batch-threading, which is
+        # specifically where the confirmed memory leak (ranaroussi/
+        # yfinance#992) lives.
         raw = data_provider.download(
             tickers, period=f"{VOL_LOOKBACK_DAYS}d",
             auto_adjust=True, progress=False, threads=True,
         )
     except Exception as e:
-        log.error(f"Batch download failed: {e}")
-        raise DataSourceError(f"volume batch download failed: {e}") from e
+        # A total data-provider outage (e.g. every ticker in the batch
+        # rate-limited at once) degrades to "nothing passed the volume
+        # filter" rather than raising -- run() already treats an empty
+        # candidate list as a normal, non-fatal empty cycle (see below).
+        # Raising here instead would propagate past that safe handling and
+        # take down the whole strategy for the cycle, which is a worse
+        # outcome for a condition that's likely to clear up on its own.
+        print(f"[strategy_calendar] volume batch download failed: {e}")
+        return [], {}
 
     try:
         has_volume = "Volume" in raw.columns.get_level_values(0)
@@ -240,8 +267,10 @@ def filter_by_volume(tickers: list[str]) -> tuple[list[str], dict]:
         has_volume = "Volume" in getattr(raw, "columns", [])
 
     if not has_volume:
-        log.error("No volume data returned.")
-        raise DataSourceError("volume batch download returned no 'Volume' column")
+        print("[strategy_calendar] volume batch download returned no data "
+              "(likely every ticker in the batch failed/rate-limited) -- "
+              "treating this cycle as zero candidates rather than erroring.")
+        return [], {}
 
     vol     = raw["Volume"]
     avg_vol = vol.mean()
@@ -253,6 +282,62 @@ def filter_by_volume(tickers: list[str]) -> tuple[list[str], dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 # ATM IV / FORWARD IV / FF
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _quote_at_strike(chain, strike: float) -> Optional[dict]:
+    """
+    Return bid/ask/mid of the row at exactly `strike`, or None if that strike
+    is not listed or has no two-sided quote.
+    """
+    if chain is None or chain.empty or strike is None:
+        return None
+    rows = chain[(chain["strike"] - strike).abs() < 1e-6]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    try:
+        bid = float(row.get("bid", 0) or 0)
+        ask = float(row.get("ask", 0) or 0)
+        if bid > 0 and ask >= bid:
+            mid = (bid + ask) / 2.0
+            return {"bid": round(bid, 3), "ask": round(ask, 3), "mid": round(mid, 3)}
+    except Exception:
+        pass
+    return None
+
+
+def _shared_atm_strike(calls1, calls2, spot: float) -> Optional[float]:
+    """
+    A CALENDAR spread has ONE strike for both legs. Pick the strike closest to
+    spot that is listed on BOTH expiries (weeklies and monthlies frequently
+    have different strike grids, so picking per-chain silently produced
+    diagonals). Prefer strikes with a live two-sided quote on both legs; fall
+    back to any common strike if none is quoted on both.
+    """
+    if calls1 is None or calls2 is None or calls1.empty or calls2.empty:
+        return None
+
+    def _strikes(chain, quoted_only: bool) -> set:
+        out = set()
+        for _, r in chain.iterrows():
+            try:
+                k = float(r["strike"])
+                if quoted_only:
+                    bid = float(r.get("bid", 0) or 0)
+                    ask = float(r.get("ask", 0) or 0)
+                    if not (bid > 0 and ask >= bid):
+                        continue
+                out.add(round(k, 4))
+            except Exception:
+                continue
+        return out
+
+    common = _strikes(calls1, True) & _strikes(calls2, True)
+    if not common:
+        common = _strikes(calls1, False) & _strikes(calls2, False)
+    if not common:
+        return None
+    return min(common, key=lambda k: abs(k - spot))
 
 
 def _get_atm_row(chain, spot: float) -> Optional[dict]:
@@ -417,27 +502,43 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
         except Exception:
             earn_days, earn_date = None, None
 
-        chain_cache: dict[date, pd.DataFrame] = {}
+        # Next ex-dividend date (ISO string) for the call-calendar assignment
+        # warning in the parity comparison. Best effort only.
+        ex_div_date = None
+        try:
+            cal = getattr(tk, "calendar", None)
+            exd = None
+            if isinstance(cal, dict):
+                exd = cal.get("Ex-Dividend Date")
+            elif cal is not None and hasattr(cal, "loc") and "Ex-Dividend Date" in getattr(cal, "index", []):
+                exd = cal.loc["Ex-Dividend Date"].iloc[0]
+            if exd is not None:
+                exd = pd.Timestamp(exd).date()
+                if exd >= today:
+                    ex_div_date = exd.strftime("%Y-%m-%d")
+        except Exception:
+            ex_div_date = None
 
-        # For the model-debit comparison below. get_atm_iv() already computes
-        # these internally per IV solve; fetched once more here since they're
-        # not threaded through to the per-pair loop.
-        r = get_risk_free_rate()
-        q = get_dividend_yield(ticker, spot)
+        # Whole chain object (calls AND puts from one fetch) is cached so the
+        # parity twin is quoted at the same instant as the call legs.
+        chain_cache: dict[date, object] = {}
 
-        def fetch_calls(exp: date) -> Optional[pd.DataFrame]:
+        def fetch_chain(exp: date):
             if exp in chain_cache:
                 return chain_cache[exp]
             exp_str = exp.strftime("%Y-%m-%d")
             try:
                 chain = tk.option_chain(exp_str)
-                calls = chain.calls if hasattr(chain, "calls") else None
-                chain_cache[exp] = calls
-                return calls
+                chain_cache[exp] = chain
+                return chain
             except Exception as e:
                 log.debug(f"{ticker} {exp_str}: fetch failed: {e}")
                 chain_cache[exp] = None
                 return None
+
+        def fetch_calls(exp: date) -> Optional[pd.DataFrame]:
+            chain = fetch_chain(exp)
+            return chain.calls if (chain is not None and hasattr(chain, "calls")) else None
 
         results = []
 
@@ -462,48 +563,66 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
             if ff < MIN_FF:
                 continue
 
-            # Fetch bid/ask for each leg at the ATM strike
-            quote_short = _get_atm_row(calls1, spot)
-            quote_long  = _get_atm_row(calls2, spot)
+            # Calendar spread: BOTH legs share one strike. Choose the strike
+            # nearest spot that exists on both expiries, then quote each leg
+            # at that same strike.
+            shared_strike = _shared_atm_strike(calls1, calls2, spot)
+            if shared_strike is None:
+                log.debug(f"{ticker} {exp1}/{exp2}: no common strike across legs")
+                continue
+            strike_short = shared_strike
+            strike_long  = shared_strike
 
-            def atm_strike(chain, spot):
-                if chain is None or chain.empty:
-                    return None
-                c = chain.copy()
-                c["d"] = (c["strike"] - spot).abs()
-                return float(c.sort_values("d").iloc[0]["strike"])
+            quote_short = _quote_at_strike(calls1, shared_strike)
+            quote_long  = _quote_at_strike(calls2, shared_strike)
 
-            strike_short = atm_strike(calls1, spot)
-            strike_long  = atm_strike(calls2, spot)
+            # No two-sided quote on either leg -> the debit would be purely
+            # theoretical and the signal is untradeable as shown. Skip it.
+            if quote_short is None or quote_long is None:
+                log.debug(f"{ticker} {exp1}/{exp2}: leg(s) at {shared_strike} not two-sided quoted")
+                continue
 
             # Model vs. Market Divergence Filter. Same debit-anchoring
             # priority as the dashboard's payoff modal (_payoffCal in
             # dashboard.html): prefer the natural market (buy ask / sell
             # bid), fall back to mid, fall back to the model price itself
-            # when there's no quote to compare against at all.
+            # when there's no quote to compare against at all. r=0, q=0, one
+            # shared strike -- matching the chart's own bsCall(), not this
+            # module's more complete _euro_call(spot, K, T, r, q, sigma) used
+            # elsewhere -- see the comment on MAX_DEBIT_EDGE above for why.
             model_debit = None
-            if strike_short and strike_long:
-                model_debit = (
-                    _euro_call(spot, strike_long,  t2, r, q, iv2) -
-                    _euro_call(spot, strike_short, t1, r, q, iv1)
+            if shared_strike:
+                model_debit = max(0.001,
+                    _euro_call(spot, shared_strike, t2, 0.0, 0.0, iv2) -
+                    _euro_call(spot, shared_strike, t1, 0.0, 0.0, iv1)
                 )
 
             net_debit = None
-            if quote_long and quote_short:
-                nat = quote_long["ask"] - quote_short["bid"]
-                mid = quote_long["mid"] - quote_short["mid"]
+            debit_edge = None
+            if model_debit is not None:
+                nat = ((quote_long["ask"] - quote_short["bid"])
+                      if (quote_long and quote_short) else None)
+                mid = ((quote_long["mid"] - quote_short["mid"])
+                      if (quote_long and quote_short) else None)
                 if nat is not None and nat > 0:
                     net_debit = nat
                 elif mid is not None and mid > 0:
                     net_debit = mid
-
-            if (model_debit is not None and model_debit > 0
-                    and net_debit is not None):
+                else:
+                    net_debit = model_debit  # no live quotes -> edge is 0
+                net_debit = max(0.001, net_debit)
                 debit_edge = (net_debit - model_debit) / model_debit
-                if debit_edge > MAX_DEBIT_EDGE:
-                    continue
+
+            try:
+                parity_info = parity.calendar_twin(
+                    fetch_chain(exp1), fetch_chain(exp2), shared_strike,
+                    exp1.strftime("%Y-%m-%d"), exp2.strftime("%Y-%m-%d"),
+                    spot, original_type="CALL", ex_div_date=ex_div_date)
+            except Exception as e:
+                parity_info = {"available": False, "reason": f"{type(e).__name__}: {e}"}
 
             results.append({
+                "parity":       parity_info,
                 "ticker":       ticker,
                 "spot":         round(spot, 2),
                 "exp_short":    exp1.strftime("%Y-%m-%d"),
@@ -518,6 +637,7 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
                 "ff":           round(ff * 100, 2),
                 "strike_short": strike_short,
                 "strike_long":  strike_long,
+                "debit_edge":   round(debit_edge, 4) if debit_edge is not None else None,
                 "short_bid":    quote_short["bid"] if quote_short else None,
                 "short_ask":    quote_short["ask"] if quote_short else None,
                 "short_mid":    quote_short["mid"] if quote_short else None,
@@ -544,6 +664,16 @@ def analyze_ticker(ticker: str, avg_vol_30d: Optional[float] = None) -> list[dic
 # MAIN RUNNER
 # ─────────────────────────────────────────────────────────────────────────────
 
+def refresh_one(ticker: str, prev_rows: Optional[list[dict]] = None) -> list[dict]:
+    """Re-analyse ONE ticker on fresh data (dashboard Refresh). Returns its pairs."""
+    avg = None
+    for r in prev_rows or []:
+        if r.get("avg_vol_30d"):
+            avg = r["avg_vol_30d"]
+            break
+    return analyze_ticker(ticker.upper(), avg_vol_30d=avg)
+
+
 def run(
     on_progress: Optional[Callable[[dict], None]] = None,
 ) -> list[dict]:
@@ -563,7 +693,8 @@ def run(
     total       = len(candidates)
 
     for i, ticker in enumerate(candidates, 1):
-        results = analyze_ticker(ticker, avg_vol_30d=vol_map.get(ticker))
+        with scan_control.ticker_slot():
+            results = analyze_ticker(ticker, avg_vol_30d=vol_map.get(ticker))
 
         progress_event = {
             "ticker":   ticker,

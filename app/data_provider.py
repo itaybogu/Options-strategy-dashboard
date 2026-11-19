@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from typing import Any, Optional
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,17 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError:
+        log.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+
+
 DEFAULT_PROVIDER = os.getenv("DATA_PROVIDER", "ibkr").strip().lower()
 
 IBKR_HOST      = os.getenv("IBKR_HOST", "127.0.0.1") or "127.0.0.1"
@@ -76,6 +88,17 @@ IBKR_CLIENT_ID = _env_int("IBKR_CLIENT_ID", 17)
 IBKR_FALLBACK_TO_YFINANCE = os.getenv(
     "IBKR_FALLBACK_TO_YFINANCE", "true"
 ).strip().lower() in ("1", "true", "yes")
+
+# download()'s ThreadPoolExecutor pacing. The rewrite that removed
+# yf.download(threads=True) (see download()'s docstring -- it fixed a
+# confirmed upstream memory leak) traded that leak for a worse problem: with
+# no pacing at all, a full ~500-ticker universe fired as fast as the pool
+# could go, and that burst pattern is exactly what triggers aggressive
+# rate-limiting from Yahoo -- observed taking down every single ticker in a
+# batch at once, which then cascades (an empty download() result crashing
+# whatever called it expecting real data). Small pool, real delay per call.
+DOWNLOAD_MAX_WORKERS = _env_int("DOWNLOAD_MAX_WORKERS", 4)
+DOWNLOAD_DELAY       = _env_float("DOWNLOAD_DELAY", 0.25)
 
 _VALID_PROVIDERS = ("ibkr", "yfinance")
 
@@ -319,6 +342,19 @@ def download(tickers, period: str = "1mo", interval: str = "1d",
     data per cycle. The cache key includes the sorted ticker set, so it only
     dedupes when the request really is identical; a different universe or a
     different period still fetches.
+
+    Does NOT call yf.download() itself. yf.download(threads=True) hands
+    multi-ticker fan-out to yfinance's own internal thread pool (the
+    `multitasking` library), and that specific code path has a confirmed
+    upstream memory leak (ranaroussi/yfinance#992) that only shows up under
+    sustained repeated calls -- exactly what continuous-mode scanning does.
+    Instead, each ticker is fetched individually via yf.Ticker().history(),
+    parallelized (when threads=True and there's more than one symbol) with a
+    plain concurrent.futures.ThreadPoolExecutor -- ordinary threading from
+    the outside, never touching yfinance's own internal batch-threading path,
+    so it gets the same parallel-fetch speed without the leak. threads=False
+    fetches sequentially instead; useful for isolating a data issue to one
+    symbol without any concurrency in the mix.
     """
     def _fetch():
         if get_provider() == "ibkr":
@@ -333,11 +369,57 @@ def download(tickers, period: str = "1mo", interval: str = "1d",
                     raise
                 _mark_fallback(f"download(): {type(e).__name__}: {e}")
 
+        # yf.download(threads=True) hands the multi-ticker fan-out to
+        # yfinance's own internal thread pool (the `multitasking` library) --
+        # that internal code path is specifically where ranaroussi/
+        # yfinance#992's confirmed leak lives. Fetching each ticker
+        # individually and parallelizing with plain concurrent.futures
+        # never invokes yfinance's own threaded download path at all, so it
+        # sidesteps the leak rather than just avoiding it by going slower.
+        # threads=False here means "don't even bother with our own pool" --
+        # useful for a single ticker, or for isolating a data issue to one
+        # symbol without any concurrency in the mix.
         import yfinance as yf
-        return yf.download(
-            tickers, period=period, interval=interval, auto_adjust=auto_adjust,
-            progress=progress, group_by=group_by, threads=threads, **kwargs
-        )
+        import pandas as pd
+
+        syms = list(tickers) if isinstance(tickers, (list, tuple, set)) else [tickers]
+
+        def _one(sym: str):
+            time.sleep(DOWNLOAD_DELAY)  # pace every call, threaded or not
+            try:
+                h = yf.Ticker(sym).history(period=period, interval=interval,
+                                           auto_adjust=auto_adjust, **kwargs)
+            except Exception as e:
+                print(f"[data_provider] download(): {sym} failed: {e}")
+                return sym, None
+            return sym, h
+
+        if threads and len(syms) > 1:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(DOWNLOAD_MAX_WORKERS, len(syms))) as ex:
+                results = dict(ex.map(_one, syms))
+        else:
+            results = dict(_one(s) for s in syms)
+
+        frames = {s: df for s, df in results.items()
+                 if df is not None and not df.empty}
+        if not frames:
+            return pd.DataFrame()
+
+        # yf.download(group_by="column") returns level 0 = field
+        # (Open/High/Low/Close/Volume/...), level 1 = ticker -- pd.concat
+        # on a dict puts the dict key (ticker) at level 0, so the levels
+        # need swapping to match what callers (raw["Close"], raw["Volume"])
+        # already expect.
+        combined = pd.concat(frames, axis=1)
+        combined = combined.swaplevel(0, 1, axis=1).sort_index(axis=1, level=0)
+        if len(syms) == 1:
+            # yf.download() flattens to single-level columns for one ticker;
+            # mirror that so existing single-symbol call sites don't need to
+            # change how they index the result.
+            combined.columns = combined.columns.droplevel(1)
+        return combined
 
     try:
         import market_cache
